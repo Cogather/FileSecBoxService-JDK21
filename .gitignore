@@ -1,0 +1,10 @@
+target/
+storage/
+*.class
+.settings/
+.classpath
+.project
+.idea/
+*.iml
+*.log
+
