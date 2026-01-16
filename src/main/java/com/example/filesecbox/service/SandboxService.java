@@ -98,25 +98,45 @@ public class SandboxService {
         log.info("Starting skill upload for agent: {}, file: {}", agentId, file.getOriginalFilename());
         Path skillsDir = getAgentRoot(agentId).resolve("skills");
         Set<String> affectedSkills = new HashSet<>();
+        Set<String> skillsWithMd = new HashSet<>();
 
         storageService.writeLockedVoid(agentId, () -> {
             long start = System.currentTimeMillis();
             Files.createDirectories(skillsDir);
+
+            // 1. 第一次扫描：确定技能列表并校验 SKILL.md
             try (ZipInputStream zis = new ZipInputStream(file.getInputStream(), StandardCharsets.UTF_8)) {
-                scanAffectedSkills(zis, affectedSkills);
+                scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
             } catch (Exception e) {
-                log.warn("UTF-8 scan failed for ZIP, retrying with GBK...");
+                if (e instanceof RuntimeException && e.getMessage().contains("Validation Error")) throw e;
+                log.warn("UTF-8 scan failed, retrying with GBK...");
+                affectedSkills.clear();
+                skillsWithMd.clear();
                 try (ZipInputStream zisGbk = new ZipInputStream(file.getInputStream(), Charset.forName("GBK"))) {
-                    scanAffectedSkills(zisGbk, affectedSkills);
+                    scanAndValidateSkills(zisGbk, affectedSkills, skillsWithMd);
                 }
             }
+
+            // 2. 最终合法性检查
+            if (affectedSkills.isEmpty()) {
+                throw new RuntimeException("Validation Error: No valid skill directory found in ZIP.");
+            }
+            for (String skill : affectedSkills) {
+                if (!skillsWithMd.contains(skill)) {
+                    throw new RuntimeException("Validation Error: Skill [" + skill + "] is missing required 'SKILL.md' file.");
+                }
+            }
+
+            // 3. 准备覆盖：先删除旧目录
             for (String skillName : affectedSkills) {
                 storageService.deleteRecursively(skillsDir.resolve(skillName));
             }
+
+            // 4. 第二次扫描：正式解压
             try (ZipInputStream zis = new ZipInputStream(file.getInputStream(), StandardCharsets.UTF_8)) {
                 extractZip(zis, skillsDir);
             } catch (Exception e) {
-                log.warn("UTF-8 extract failed for ZIP, retrying with GBK...");
+                log.warn("UTF-8 extract failed, retrying with GBK...");
                 try (ZipInputStream zisGbk = new ZipInputStream(file.getInputStream(), Charset.forName("GBK"))) {
                     extractZip(zisGbk, skillsDir);
                 }
@@ -305,13 +325,20 @@ public class SandboxService {
 
     // --- 内部辅助方法 ---
 
-    private void scanAffectedSkills(ZipInputStream zis, Set<String> skills) throws IOException {
+    private void scanAndValidateSkills(ZipInputStream zis, Set<String> skills, Set<String> skillsWithMd) throws IOException {
         ZipEntry entry;
         while ((entry = zis.getNextEntry()) != null) {
-            String name = entry.getName();
+            String name = entry.getName().replace('\\', '/');
             int slash = name.indexOf('/');
-            if (slash != -1) skills.add(name.substring(0, slash));
-            else if (entry.isDirectory()) skills.add(name);
+            if (slash != -1) {
+                String skillName = name.substring(0, slash);
+                skills.add(skillName);
+                if (name.endsWith("/SKILL.md") || name.equals(skillName + "/SKILL.md")) {
+                    skillsWithMd.add(skillName);
+                }
+            } else if (entry.isDirectory()) {
+                skills.add(name.replace("/", ""));
+            }
             zis.closeEntry();
         }
     }

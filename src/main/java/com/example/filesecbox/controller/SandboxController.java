@@ -21,7 +21,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.uploadSkillReport(agentId, file))); }
         catch (Exception e) { 
             log.error("API ERROR: uploadSkill", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -31,7 +31,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.getSkillList(agentId))); }
         catch (Exception e) { 
             log.error("API ERROR: getSkillList", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -41,7 +41,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.deleteSkill(agentId, name))); }
         catch (Exception e) { 
             log.error("API ERROR: deleteSkill", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -51,7 +51,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.uploadFile(agentId, file))); }
         catch (Exception e) { 
             log.error("API ERROR: uploadFile", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -61,7 +61,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.listFiles(agentId, path))); }
         catch (Exception e) { 
             log.error("API ERROR: listFiles", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -72,20 +72,26 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.getContent(agentId, path, offset, limit))); }
         catch (Exception e) { 
             log.error("API ERROR: getContent", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
     @PostMapping("/{agentId}/write")
     public ResponseEntity<ApiResponse<?>> write(@PathVariable String agentId, @RequestBody WriteRequest request) {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.write(agentId, request))); }
-        catch (Exception e) { return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); }
+        catch (Exception e) { 
+            log.error("API ERROR: write", e);
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
+        }
     }
 
     @PostMapping("/{agentId}/edit")
     public ResponseEntity<ApiResponse<?>> edit(@PathVariable String agentId, @RequestBody EditRequest request) {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.edit(agentId, request))); }
-        catch (Exception e) { return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); }
+        catch (Exception e) { 
+            log.error("API ERROR: edit", e);
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
+        }
     }
 
     @PostMapping("/{agentId}/execute")
@@ -93,9 +99,9 @@ public class SandboxController {
         try {
             ExecutionResult result = sandboxService.execute(agentId, request);
             return ResponseEntity.ok(ApiResponse.success(result));
-        } catch (Exception e) {
+        } catch (Exception e) { 
             log.error("API ERROR: execute", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage()));
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 
@@ -105,7 +111,7 @@ public class SandboxController {
         try { return ResponseEntity.ok(ApiResponse.success(sandboxService.deleteFile(agentId, path))); }
         catch (Exception e) { 
             log.error("API ERROR: deleteFile", e);
-            return ResponseEntity.internalServerError().body(ApiResponse.error(e.getMessage())); 
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
         }
     }
 }
