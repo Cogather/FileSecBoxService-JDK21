@@ -166,7 +166,10 @@ public class SandboxService {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
                 for (Path entry : stream) {
                     if (Files.isDirectory(entry)) {
-                        metadataList.add(parseSkillMd(entry));
+                        // 仅当目录下存在 SKILL.md 时才视为有效技能
+                        if (Files.exists(entry.resolve("SKILL.md"))) {
+                            metadataList.add(parseSkillMd(entry));
+                        }
                     }
                 }
             }
