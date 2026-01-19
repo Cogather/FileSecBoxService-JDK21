@@ -153,7 +153,7 @@ public class SandboxService {
     }
 
     /**
-     * 1.2 获取技能描述列表 (包含自愈逻辑)
+     * 1.2 获取技能描述列表 (支持冗余层级压缩)
      */
     public List<SkillMetadata> getSkillList(String agentId) throws IOException {
         log.info("Fetching skill list for agent: {}", agentId);
@@ -164,19 +164,16 @@ public class SandboxService {
         return storageService.writeLocked(agentId, () -> {
             long start = System.currentTimeMillis();
             
-            // 1. 自愈处理：平铺嵌套结构 & 提取 SKILL.md
+            // 1. 冗余层级压缩处理：平铺嵌套结构 A/B/* -> A/*
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
                 for (Path entry : stream) {
                     if (Files.isDirectory(entry)) {
-                        // A. 处理冗余包装：A/B/* -> A/*
                         autoFlattenWrapper(entry);
-                        // B. 处理 SKILL.md 错位：从深层子目录提取到根部
-                        autoHealSkillMd(entry);
                     }
                 }
             }
 
-            // 2. 获取自愈后的合法列表
+            // 2. 获取压缩后的合法列表 (根目录下必须有 SKILL.md)
             List<SkillMetadata> metadataList = new ArrayList<>();
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
                 for (Path entry : stream) {
@@ -185,7 +182,7 @@ public class SandboxService {
                     }
                 }
             }
-            log.info("Fetched and healed skill list in {}ms", System.currentTimeMillis() - start);
+            log.info("Fetched and processed skill list in {}ms", System.currentTimeMillis() - start);
             return metadataList;
         });
     }
@@ -198,7 +195,7 @@ public class SandboxService {
             Iterator<Path> it = stream.iterator();
             if (!it.hasNext()) return;
             Path first = it.next();
-            if (it.hasNext()) return;
+            if (it.hasNext()) return; // 超过 1 个项（如同时包含子目录 B 和文件 C），不执行平铺
 
             if (Files.isDirectory(first)) {
                 log.info("Detected redundant wrapper directory at {}, flattening...", first);
@@ -208,31 +205,9 @@ public class SandboxService {
                     }
                 }
                 Files.delete(first);
+                // 递归检测，处理 A/A/A/ 极端情况
                 autoFlattenWrapper(topSkillDir);
             }
-        }
-    }
-
-    /**
-     * 技能自愈：从子目录寻找 SKILL.md 并向上提取到一级目录根部
-     */
-    private void autoHealSkillMd(Path skillRootDir) {
-        // 如果根部已经有 SKILL.md，无需自愈
-        if (Files.exists(skillRootDir.resolve("SKILL.md"))) return;
-
-        try (Stream<Path> stream = Files.walk(skillRootDir, 5)) {
-            Optional<Path> nestedMd = stream
-                    .filter(p -> p.getFileName().toString().equals("SKILL.md"))
-                    .filter(p -> !p.getParent().equals(skillRootDir))
-                    .findFirst();
-
-            if (nestedMd.isPresent()) {
-                Path target = skillRootDir.resolve("SKILL.md");
-                log.info("Auto-Healing: Moving nested SKILL.md from {} to {}", nestedMd.get(), target);
-                Files.move(nestedMd.get(), target, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException e) {
-            log.warn("Failed to auto-heal skill directory: {}", skillRootDir, e);
         }
     }
 
@@ -306,14 +281,6 @@ public class SandboxService {
     public FileContentResult getContent(String agentId, String logicalPath, Integer offset, Integer limit) throws IOException {
         log.info("Fetching content for agent: {}, path: {}, offset: {}, limit: {}", agentId, logicalPath, offset, limit);
         
-        // 针对 SKILL.md 的按需自愈逻辑
-        if (isTopLevelSkillMd(logicalPath)) {
-            Path skillRootDir = resolveLogicalPath(agentId, logicalPath).getParent();
-            if (!Files.exists(skillRootDir.resolve("SKILL.md"))) {
-                storageService.writeLockedVoid(agentId, () -> autoHealSkillMd(skillRootDir));
-            }
-        }
-
         Path physicalPath = resolveLogicalPath(agentId, logicalPath);
         if (!Files.exists(physicalPath)) throw new IOException("Path not found: " + logicalPath);
 
@@ -333,14 +300,6 @@ public class SandboxService {
             log.info("Fetched {} lines in {}ms", lines.size(), System.currentTimeMillis() - start);
             return new FileContentResult(content, lines);
         });
-    }
-
-    private boolean isTopLevelSkillMd(String logicalPath) {
-        if (logicalPath == null) return false;
-        String normalized = logicalPath.replace('\\', '/');
-        // 格式必须是 skills/{skill_name}/SKILL.md
-        String[] parts = normalized.split("/");
-        return normalized.startsWith("skills/") && normalized.endsWith("/SKILL.md") && parts.length == 3;
     }
 
     /**
@@ -400,7 +359,29 @@ public class SandboxService {
             throw new RuntimeException("Command cannot be empty.");
         }
 
-        return skillExecutor.executeInDir(agentRoot, commandLine);
+        // 1. 识别可能受影响的技能（用于执行后自动进行冗余压缩）
+        Set<String> affectedSkills = new HashSet<>();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("skills/([^/\\s>|&]+)").matcher(commandLine);
+        while (matcher.find()) {
+            affectedSkills.add(matcher.group(1));
+        }
+
+        // 2. 执行命令
+        ExecutionResult result = skillExecutor.executeInDir(agentRoot, commandLine);
+
+        // 3. 如果操作了 skills 目录，执行完后立即触发冗余压缩处理
+        if (!affectedSkills.isEmpty()) {
+            storageService.writeLockedVoid(agentId, () -> {
+                for (String skillName : affectedSkills) {
+                    Path skillPath = agentRoot.resolve("skills").resolve(skillName);
+                    if (Files.isDirectory(skillPath)) {
+                        autoFlattenWrapper(skillPath);
+                    }
+                }
+            });
+        }
+
+        return result;
     }
 
     /**
