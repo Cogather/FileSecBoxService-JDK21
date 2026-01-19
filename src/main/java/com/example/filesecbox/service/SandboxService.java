@@ -215,21 +215,44 @@ public class SandboxService {
      * 1.3 删除技能
      */
     public String deleteSkill(String agentId, String skillName) throws IOException {
-        log.info("Deleting skill for agent: {}, skillName: {}", agentId, skillName);
+// ... (原有代码保持不变)
+    }
+
+    /**
+     * 1.4 下载技能包 (ZIP)
+     */
+    public void downloadSkill(String agentId, String skillName, java.io.OutputStream os) throws IOException {
+        log.info("Downloading skill for agent: {}, skillName: {}", agentId, skillName);
         if (skillName == null || skillName.trim().isEmpty()) {
             throw new RuntimeException("Skill name cannot be empty.");
         }
         Path skillPath = getAgentRoot(agentId).resolve("skills").resolve(skillName).normalize();
         storageService.validateScope(skillPath, getAgentRoot(agentId).resolve("skills"));
 
-        storageService.writeLockedVoid(agentId, () -> {
-            if (!Files.exists(skillPath)) {
-                throw new IOException("Skill not found: " + skillName);
+        if (!Files.exists(skillPath) || !Files.isDirectory(skillPath)) {
+            throw new IOException("Skill not found or invalid: " + skillName);
+        }
+
+        storageService.readLocked(agentId, () -> {
+            try (ZipOutputStream zos = new ZipOutputStream(os)) {
+                zipDirectory(skillPath, skillName, zos);
             }
-            storageService.deleteRecursively(skillPath);
-            log.info("Successfully deleted skill: {}", skillName);
+            return null;
         });
-        return "Successfully deleted skill: " + skillName;
+    }
+
+    private void zipDirectory(Path folder, String parentFolder, ZipOutputStream zos) throws IOException {
+        try (Stream<Path> stream = Files.walk(folder)) {
+            List<Path> paths = stream.collect(Collectors.toList());
+            for (Path path : paths) {
+                if (Files.isDirectory(path)) continue;
+                String zipEntryName = parentFolder + "/" + folder.relativize(path).toString().replace('\\', '/');
+                ZipEntry zipEntry = new ZipEntry(zipEntryName);
+                zos.putNextEntry(zipEntry);
+                Files.copy(path, zos);
+                zos.closeEntry();
+            }
+        }
     }
 
     /**
