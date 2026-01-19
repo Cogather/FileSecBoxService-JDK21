@@ -65,15 +65,14 @@ public class SkillExecutor {
                         throw new RuntimeException("Security Error: Path '" + potentialPath + "' is out of operable scope. Must start with 'skills/' or 'files/'.");
                     }
 
-                    // --- 新增：自动创建目录逻辑 (增强版) ---
-                    try {
-                        String cleanPath = potentialPath.replace('\\', '/');
-                        Path targetPath = workingDir.resolve(cleanPath).normalize();
-                        Path dirToCreate = cleanPath.contains(".") ? targetPath.getParent() : targetPath;
-                        if (dirToCreate != null && !java.nio.file.Files.exists(dirToCreate)) {
-                            java.nio.file.Files.createDirectories(dirToCreate);
+                    // --- 新增：SKILL.md 深度拦截逻辑 ---
+                    if (normalized.endsWith("/skill.md") || normalized.equals("skill.md")) {
+                        String[] parts = normalized.split("/");
+                        // 必须是 skills/{name}/SKILL.md 格式，长度为 3
+                        if (!normalized.startsWith("skills/") || parts.length != 3) {
+                            throw new RuntimeException("Security Error: 'SKILL.md' is a system reserved file. You can only create/edit it at the root of a skill (e.g., skills/my_skill/SKILL.md).");
                         }
-                    } catch (Exception ignored) {}
+                    }
                 }
             }
         }

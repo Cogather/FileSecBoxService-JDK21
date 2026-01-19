@@ -42,6 +42,25 @@ public class StorageService {
         }
     }
 
+    public <T> T writeLocked(String agentId, IOCallable<T> action) throws IOException {
+        ReadWriteLock lock = getLock(agentId);
+        try {
+            if (lock.writeLock().tryLock(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                try {
+                    return action.call();
+                } finally {
+                    lock.writeLock().unlock();
+                }
+            } else {
+                log.warn("Write lock timeout for agent: {}", agentId);
+                throw new IOException("Server busy: Update operation timed out. Please try again.");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Operation interrupted.");
+        }
+    }
+
     public void writeLockedVoid(String agentId, IOVoidAction action) throws IOException {
         ReadWriteLock lock = getLock(agentId);
         try {

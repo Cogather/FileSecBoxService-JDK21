@@ -153,29 +153,61 @@ public class SandboxService {
     }
 
     /**
-     * 1.2 获取技能描述列表
+     * 1.2 获取技能描述列表 (包含自愈逻辑)
      */
     public List<SkillMetadata> getSkillList(String agentId) throws IOException {
         log.info("Fetching skill list for agent: {}", agentId);
-        Path skillsDir = getAgentRoot(agentId).resolve("skills");
+        Path agentRoot = getAgentRoot(agentId);
+        Path skillsDir = agentRoot.resolve("skills");
         if (!Files.exists(skillsDir)) return Collections.emptyList();
 
-        return storageService.readLocked(agentId, () -> {
+        return storageService.writeLocked(agentId, () -> {
             long start = System.currentTimeMillis();
-            List<SkillMetadata> metadataList = new ArrayList<>();
+            
+            // 1. 自愈处理：在每个一级目录下寻找 SKILL.md 并向上提取到根部
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
                 for (Path entry : stream) {
                     if (Files.isDirectory(entry)) {
-                        // 仅当目录下存在 SKILL.md 时才视为有效技能
-                        if (Files.exists(entry.resolve("SKILL.md"))) {
-                            metadataList.add(parseSkillMd(entry));
-                        }
+                        autoHealSkillMd(entry);
                     }
                 }
             }
-            log.info("Fetched {} skills in {}ms", metadataList.size(), System.currentTimeMillis() - start);
+
+            // 2. 获取自愈后的合法列表
+            List<SkillMetadata> metadataList = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
+                for (Path entry : stream) {
+                    if (Files.isDirectory(entry) && Files.exists(entry.resolve("SKILL.md"))) {
+                        metadataList.add(parseSkillMd(entry));
+                    }
+                }
+            }
+            log.info("Fetched and healed skill list in {}ms", System.currentTimeMillis() - start);
             return metadataList;
         });
+    }
+
+    /**
+     * 技能自愈：从子目录寻找 SKILL.md 并向上提取到一级目录根部
+     */
+    private void autoHealSkillMd(Path skillRootDir) {
+        // 如果根部已经有 SKILL.md，无需自愈
+        if (Files.exists(skillRootDir.resolve("SKILL.md"))) return;
+
+        try (Stream<Path> stream = Files.walk(skillRootDir, 5)) {
+            Optional<Path> nestedMd = stream
+                    .filter(p -> p.getFileName().toString().equals("SKILL.md"))
+                    .filter(p -> !p.getParent().equals(skillRootDir))
+                    .findFirst();
+
+            if (nestedMd.isPresent()) {
+                Path target = skillRootDir.resolve("SKILL.md");
+                log.info("Auto-Healing: Moving nested SKILL.md from {} to {}", nestedMd.get(), target);
+                Files.move(nestedMd.get(), target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            log.warn("Failed to auto-heal skill directory: {}", skillRootDir, e);
+        }
     }
 
     /**
@@ -304,11 +336,11 @@ public class SandboxService {
             // 拆分后格式应该为 ["skills", "{skill_name}", "SKILL.md"]，长度必须为 3
             String[] parts = normalized.split("/");
             if (parts.length != 3) {
-                throw new RuntimeException("Validation Error: 'SKILL.md' placement must follow the pattern 'skills/{skill_name}/SKILL.md'.");
+                throw new RuntimeException("Security Error: 'SKILL.md' is a system reserved file. You can only create/edit it at the root of a skill (e.g., skills/my_skill/SKILL.md).");
             }
         } else if (normalized.equals("skills/SKILL.md")) {
             // 针对直接在 skills 目录下创建 SKILL.md 的情况
-            throw new RuntimeException("Validation Error: 'SKILL.md' placement must follow the pattern 'skills/{skill_name}/SKILL.md'.");
+            throw new RuntimeException("Security Error: 'SKILL.md' is a system reserved file. You can only create/edit it at the root of a skill (e.g., skills/my_skill/SKILL.md).");
         }
     }
 
