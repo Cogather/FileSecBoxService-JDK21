@@ -164,10 +164,13 @@ public class SandboxService {
         return storageService.writeLocked(agentId, () -> {
             long start = System.currentTimeMillis();
             
-            // 1. 自愈处理：在每个一级目录下寻找 SKILL.md 并向上提取到根部
+            // 1. 自愈处理：平铺嵌套结构 & 提取 SKILL.md
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
                 for (Path entry : stream) {
                     if (Files.isDirectory(entry)) {
+                        // A. 处理冗余包装：A/B/* -> A/*
+                        autoFlattenWrapper(entry);
+                        // B. 处理 SKILL.md 错位：从深层子目录提取到根部
                         autoHealSkillMd(entry);
                     }
                 }
@@ -185,6 +188,29 @@ public class SandboxService {
             log.info("Fetched and healed skill list in {}ms", System.currentTimeMillis() - start);
             return metadataList;
         });
+    }
+
+    /**
+     * 冗余层级自动压缩：如果 A 目录下仅包含一个子目录 B 且无其他文件，则将 B 的内容提升到 A
+     */
+    private void autoFlattenWrapper(Path topSkillDir) throws IOException {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(topSkillDir)) {
+            Iterator<Path> it = stream.iterator();
+            if (!it.hasNext()) return;
+            Path first = it.next();
+            if (it.hasNext()) return;
+
+            if (Files.isDirectory(first)) {
+                log.info("Detected redundant wrapper directory at {}, flattening...", first);
+                try (DirectoryStream<Path> subStream = Files.newDirectoryStream(first)) {
+                    for (Path subItem : subStream) {
+                        Files.move(subItem, topSkillDir.resolve(subItem.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                Files.delete(first);
+                autoFlattenWrapper(topSkillDir);
+            }
+        }
     }
 
     /**
