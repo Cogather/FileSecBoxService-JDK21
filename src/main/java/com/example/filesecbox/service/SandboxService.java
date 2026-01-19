@@ -361,7 +361,7 @@ public class SandboxService {
 
         // 1. 识别可能受影响的技能（用于执行后自动进行冗余压缩）
         Set<String> affectedSkills = new HashSet<>();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("skills/([^/\\s>|&]+)").matcher(commandLine);
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("skills[\\\\/]([^\\\\/\\s\"'>|&]+)").matcher(commandLine);
         while (matcher.find()) {
             affectedSkills.add(matcher.group(1));
         }
