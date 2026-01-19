@@ -279,6 +279,15 @@ public class SandboxService {
      */
     public FileContentResult getContent(String agentId, String logicalPath, Integer offset, Integer limit) throws IOException {
         log.info("Fetching content for agent: {}, path: {}, offset: {}, limit: {}", agentId, logicalPath, offset, limit);
+        
+        // 针对 SKILL.md 的按需自愈逻辑
+        if (isTopLevelSkillMd(logicalPath)) {
+            Path skillRootDir = resolveLogicalPath(agentId, logicalPath).getParent();
+            if (!Files.exists(skillRootDir.resolve("SKILL.md"))) {
+                storageService.writeLockedVoid(agentId, () -> autoHealSkillMd(skillRootDir));
+            }
+        }
+
         Path physicalPath = resolveLogicalPath(agentId, logicalPath);
         if (!Files.exists(physicalPath)) throw new IOException("Path not found: " + logicalPath);
 
@@ -298,6 +307,14 @@ public class SandboxService {
             log.info("Fetched {} lines in {}ms", lines.size(), System.currentTimeMillis() - start);
             return new FileContentResult(content, lines);
         });
+    }
+
+    private boolean isTopLevelSkillMd(String logicalPath) {
+        if (logicalPath == null) return false;
+        String normalized = logicalPath.replace('\\', '/');
+        // 格式必须是 skills/{skill_name}/SKILL.md
+        String[] parts = normalized.split("/");
+        return normalized.startsWith("skills/") && normalized.endsWith("/SKILL.md") && parts.length == 3;
     }
 
     /**
