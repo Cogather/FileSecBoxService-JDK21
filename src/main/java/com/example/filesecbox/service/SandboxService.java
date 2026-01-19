@@ -123,7 +123,7 @@ public class SandboxService {
             }
             for (String skill : affectedSkills) {
                 if (!skillsWithMd.contains(skill)) {
-                    throw new RuntimeException("Validation Error: Skill [" + skill + "] is missing required 'SKILL.md' file.");
+                    throw new RuntimeException("Validation Error: Skill [" + skill + "] is missing required 'SKILL.md' at its root.");
                 }
             }
 
@@ -272,6 +272,7 @@ public class SandboxService {
      * 2.4 写入/新建文件
      */
     public String write(String agentId, WriteRequest request) throws IOException {
+        validateSkillMdPlacement(request.getFilePath());
         Path physicalPath = resolveLogicalPath(agentId, request.getFilePath());
         storageService.writeLockedVoid(agentId, () -> {
             storageService.writeBytes(physicalPath, request.getContent().getBytes(StandardCharsets.UTF_8),
@@ -284,6 +285,7 @@ public class SandboxService {
      * 2.5 精确编辑/替换
      */
     public String edit(String agentId, EditRequest request) throws IOException {
+        validateSkillMdPlacement(request.getFilePath());
         Path physicalPath = resolveLogicalPath(agentId, request.getFilePath());
         if (!Files.exists(physicalPath)) throw new IOException("Path not found: " + request.getFilePath());
 
@@ -291,6 +293,23 @@ public class SandboxService {
             storageService.preciseEdit(physicalPath, request.getOldString(), request.getNewString(), request.getExpectedReplacements());
         });
         return "Successfully edited file: " + request.getFilePath();
+    }
+
+    private void validateSkillMdPlacement(String logicalPath) {
+        if (logicalPath == null) return;
+        String normalized = logicalPath.replace('\\', '/');
+        // 只有在操作 skills/ 目录下的 SKILL.md 时才进行校验
+        if (normalized.startsWith("skills/") && normalized.endsWith("/SKILL.md")) {
+            // 正确格式应该是 skills/{skill_name}/SKILL.md
+            // 拆分后格式应该为 ["skills", "{skill_name}", "SKILL.md"]，长度必须为 3
+            String[] parts = normalized.split("/");
+            if (parts.length != 3) {
+                throw new RuntimeException("Validation Error: 'SKILL.md' placement must follow the pattern 'skills/{skill_name}/SKILL.md'.");
+            }
+        } else if (normalized.equals("skills/SKILL.md")) {
+            // 针对直接在 skills 目录下创建 SKILL.md 的情况
+            throw new RuntimeException("Validation Error: 'SKILL.md' placement must follow the pattern 'skills/{skill_name}/SKILL.md'.");
+        }
     }
 
     /**
@@ -336,7 +355,8 @@ public class SandboxService {
             if (slash != -1) {
                 String skillName = name.substring(0, slash);
                 skills.add(skillName);
-                if (name.endsWith("/SKILL.md") || name.equals(skillName + "/SKILL.md")) {
+                // 严格校验：SKILL.md 必须在技能根目录下 (即 skill_a/SKILL.md)
+                if (name.equals(skillName + "/SKILL.md")) {
                     skillsWithMd.add(skillName);
                 }
             } else if (entry.isDirectory()) {
