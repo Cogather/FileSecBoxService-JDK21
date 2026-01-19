@@ -243,8 +243,9 @@ public class SandboxService {
 
     private void zipDirectory(Path folder, String parentFolder, ZipOutputStream zos) throws IOException {
         try (Stream<Path> stream = Files.walk(folder)) {
-            List<Path> paths = stream.collect(Collectors.toList());
-            for (Path path : paths) {
+            Iterator<Path> iterator = stream.iterator();
+            while (iterator.hasNext()) {
+                Path path = iterator.next();
                 if (Files.isDirectory(path)) continue;
                 String zipEntryName = parentFolder + "/" + folder.relativize(path).toString().replace('\\', '/');
                 ZipEntry zipEntry = new ZipEntry(zipEntryName);
