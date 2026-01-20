@@ -103,9 +103,9 @@ public class SandboxService {
     }
 
     /**
-     * 1.7 远程下载并安装技能
+     * 内部辅助：远程下载并安装技能 (仅供官方工具安装使用)
      */
-    public String downloadSkillFromUrl(String agentId, String url) throws IOException {
+    private String downloadSkillFromUrl(String agentId, String url) throws IOException {
         log.info("Downloading skill from URL: {} for agent: {}", url, agentId);
         if (!url.startsWith("http")) {
             throw new RuntimeException("Security Error: Only HTTP/HTTPS URLs are allowed.");
@@ -296,9 +296,9 @@ public class SandboxService {
     }
 
     /**
-     * 1.7 远程下载并安装技能
+     * 内部辅助：远程下载并安装技能 (仅供官方工具安装使用)
      */
-    public String downloadSkillFromUrl(String agentId, String url) throws IOException {
+    private String downloadSkillFromUrl(String agentId, String url) throws IOException {
         log.info("Downloading skill from URL: {} for agent: {}", url, agentId);
         if (url == null || !url.startsWith("http")) {
             throw new RuntimeException("Security Error: Only HTTP/HTTPS URLs are allowed.");
