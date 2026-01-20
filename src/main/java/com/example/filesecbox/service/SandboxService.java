@@ -29,6 +29,9 @@ public class SandboxService {
     @Value("${app.product.root.linux:/webIde/product}")
     private String productRootLinux;
 
+    @Value("${app.skill.creator.url:}")
+    private String skillCreatorUrl;
+
     private Path productRoot;
 
     @Autowired
@@ -290,6 +293,42 @@ public class SandboxService {
             }
             return null;
         });
+    }
+
+    /**
+     * 1.7 远程下载并安装技能
+     */
+    public String downloadSkillFromUrl(String agentId, String url) throws IOException {
+        log.info("Downloading skill from URL: {} for agent: {}", url, agentId);
+        if (url == null || !url.startsWith("http")) {
+            throw new RuntimeException("Security Error: Only HTTP/HTTPS URLs are allowed.");
+        }
+
+        java.net.URL targetUrl = new java.net.URL(url);
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(30000);
+        
+        int status = conn.getResponseCode();
+        if (status != 200) {
+            throw new IOException("Failed to download skill package. HTTP Status: " + status);
+        }
+
+        try (java.io.InputStream is = conn.getInputStream()) {
+            return installSkillFromStream(agentId, is, url);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    /**
+     * 1.8 安装官方 Skill Creator 工具包
+     */
+    public String installCreator(String agentId) throws IOException {
+        if (skillCreatorUrl == null || skillCreatorUrl.trim().isEmpty()) {
+            throw new RuntimeException("Configuration Error: 'app.skill.creator.url' is not configured.");
+        }
+        return downloadSkillFromUrl(agentId, skillCreatorUrl);
     }
 
     /**

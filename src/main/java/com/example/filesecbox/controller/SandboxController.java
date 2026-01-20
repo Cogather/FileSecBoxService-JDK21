@@ -88,6 +88,16 @@ public class SandboxController {
         }
     }
 
+    @PostMapping("/skills/{agentId}/install-creator")
+    public ResponseEntity<ApiResponse<?>> installCreator(@PathVariable String agentId) {
+        log.info("API CALL: installCreator, agentId: {}", agentId);
+        try { return ResponseEntity.ok(ApiResponse.success(sandboxService.installCreator(agentId))); }
+        catch (Exception e) { 
+            log.error("API ERROR: installCreator", e);
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
+        }
+    }
+
     @PostMapping("/files/{agentId}/upload")
     public ResponseEntity<ApiResponse<?>> uploadFile(@PathVariable String agentId, @RequestParam("file") MultipartFile file) {
         log.info("API CALL: uploadFile, agentId: {}, filename: {}", agentId, file.getOriginalFilename());
