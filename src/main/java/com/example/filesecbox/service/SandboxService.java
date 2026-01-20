@@ -96,60 +96,91 @@ public class SandboxService {
      */
     public String uploadSkillReport(String agentId, MultipartFile file) throws IOException {
         log.info("Starting skill upload for agent: {}, file: {}", agentId, file.getOriginalFilename());
+        return installSkillFromStream(agentId, file.getInputStream(), "upload");
+    }
+
+    /**
+     * 1.7 远程下载并安装技能
+     */
+    public String downloadSkillFromUrl(String agentId, String url) throws IOException {
+        log.info("Downloading skill from URL: {} for agent: {}", url, agentId);
+        if (!url.startsWith("http")) {
+            throw new RuntimeException("Security Error: Only HTTP/HTTPS URLs are allowed.");
+        }
+
+        java.net.URL targetUrl = new java.net.URL(url);
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(30000);
+        
+        int status = conn.getResponseCode();
+        if (status != 200) {
+            throw new IOException("Failed to download skill package. HTTP Status: " + status);
+        }
+
+        try (java.io.InputStream is = conn.getInputStream()) {
+            return installSkillFromStream(agentId, is, url);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    /**
+     * 核心技能安装流水线 (通用于上传和远程下载)
+     */
+    private String installSkillFromStream(String agentId, java.io.InputStream is, String source) throws IOException {
         Path skillsDir = getAgentRoot(agentId).resolve("skills");
         Set<String> affectedSkills = new HashSet<>();
         Set<String> skillsWithMd = new HashSet<>();
+
+        // 将 InputStream 缓存到内存或临时文件，因为需要扫描两次
+        byte[] data = storageService.readAllBytesFromInputStream(is);
 
         storageService.writeLockedVoid(agentId, () -> {
             long start = System.currentTimeMillis();
             Files.createDirectories(skillsDir);
 
-            // 1. 第一次扫描：确定技能列表并校验 SKILL.md
-            try (ZipInputStream zis = new ZipInputStream(file.getInputStream(), StandardCharsets.UTF_8)) {
+            // 1. 第一次扫描：校验 SKILL.md
+            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
                 scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
             } catch (Exception e) {
                 if (e instanceof RuntimeException && e.getMessage().contains("Validation Error")) throw e;
-                log.warn("UTF-8 scan failed, retrying with GBK...");
                 affectedSkills.clear();
                 skillsWithMd.clear();
-                try (ZipInputStream zisGbk = new ZipInputStream(file.getInputStream(), Charset.forName("GBK"))) {
+                try (ZipInputStream zisGbk = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
                     scanAndValidateSkills(zisGbk, affectedSkills, skillsWithMd);
                 }
             }
 
-            // 2. 最终合法性检查
-            if (affectedSkills.isEmpty()) {
-                throw new RuntimeException("Validation Error: No valid skill directory found in ZIP.");
-            }
+            if (affectedSkills.isEmpty()) throw new RuntimeException("Validation Error: No valid skill directory found.");
             for (String skill : affectedSkills) {
                 if (!skillsWithMd.contains(skill)) {
-                    throw new RuntimeException("Validation Error: Skill [" + skill + "] is missing required 'SKILL.md' at its root.");
+                    throw new RuntimeException("Validation Error: Skill [" + skill + "] missing 'SKILL.md'.");
                 }
             }
 
-            // 3. 准备覆盖：先删除旧目录
+            // 2. 清理旧目录
             for (String skillName : affectedSkills) {
                 storageService.deleteRecursively(skillsDir.resolve(skillName));
             }
 
-            // 4. 第二次扫描：正式解压
-            try (ZipInputStream zis = new ZipInputStream(file.getInputStream(), StandardCharsets.UTF_8)) {
+            // 3. 正式解压
+            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
                 extractZip(zis, skillsDir);
             } catch (Exception e) {
-                log.warn("UTF-8 extract failed, retrying with GBK...");
-                try (ZipInputStream zisGbk = new ZipInputStream(file.getInputStream(), Charset.forName("GBK"))) {
+                try (ZipInputStream zisGbk = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
                     extractZip(zisGbk, skillsDir);
                 }
             }
 
-            // 5. 将官方上传的技能加入身份清单 (.manifest)
+            // 4. 注册清单
             addToManifest(skillsDir, affectedSkills);
-            log.info("Skill upload and manifest registration completed in {}ms", System.currentTimeMillis() - start);
+            log.info("Skill installation from [{}] completed in {}ms", source, System.currentTimeMillis() - start);
         });
 
-        StringBuilder sb = new StringBuilder("Upload successful. Details:\n");
+        StringBuilder sb = new StringBuilder("Installation successful. Source: " + source + "\nDetails:\n");
         for (String skill : affectedSkills) {
-            sb.append(String.format("- Skill [%s] uploaded to [%s], Status: [Success]\n", 
+            sb.append(String.format("- Skill [%s] installed to [%s], Status: [Success]\n", 
                 skill, skillsDir.resolve(skill).toString().replace('\\', '/')));
         }
         return sb.toString().trim();

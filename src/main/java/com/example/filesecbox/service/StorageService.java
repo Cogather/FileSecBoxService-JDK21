@@ -95,6 +95,16 @@ public class StorageService {
         return Files.readAllBytes(path);
     }
 
+    public byte[] readAllBytesFromInputStream(java.io.InputStream is) throws IOException {
+        java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        int nRead;
+        byte[] data = new byte[16384];
+        while ((nRead = is.read(data, 0, data.length)) != -1) {
+            buffer.write(data, 0, nRead);
+        }
+        return buffer.toByteArray();
+    }
+
     public void writeBytes(Path path, byte[] content, OpenOption... options) throws IOException {
         if (path.getParent() != null) {
             Files.createDirectories(path.getParent());

@@ -78,6 +78,16 @@ public class SandboxController {
         }
     }
 
+    @PostMapping("/skills/{agentId}/download-url")
+    public ResponseEntity<ApiResponse<?>> downloadSkillFromUrl(@PathVariable String agentId, @RequestParam("url") String url) {
+        log.info("API CALL: downloadSkillFromUrl, agentId: {}, url: {}", agentId, url);
+        try { return ResponseEntity.ok(ApiResponse.success(sandboxService.downloadSkillFromUrl(agentId, url))); }
+        catch (Exception e) { 
+            log.error("API ERROR: downloadSkillFromUrl", e);
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage())); 
+        }
+    }
+
     @PostMapping("/files/{agentId}/upload")
     public ResponseEntity<ApiResponse<?>> uploadFile(@PathVariable String agentId, @RequestParam("file") MultipartFile file) {
         log.info("API CALL: uploadFile, agentId: {}, filename: {}", agentId, file.getOriginalFilename());
