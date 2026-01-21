@@ -82,23 +82,13 @@ public class SandboxService {
                     
                     // 自动识别 zip 内是否存在唯一的根目录并剥离
                     String commonRoot = null;
-                    try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                        ZipEntry entry;
-                        boolean first = true;
-                        while ((entry = zis.getNextEntry()) != null) {
-                            String name = entry.getName().replace('\\', '/');
-                            if (name.isEmpty() || name.equals("/")) continue;
-                            int slashIdx = name.indexOf('/');
-                            if (slashIdx == -1) {
-                                if (!entry.isDirectory()) { commonRoot = null; break; }
-                                String root = name;
-                                if (first) { commonRoot = root; first = false; }
-                                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
-                            } else {
-                                String root = name.substring(0, slashIdx);
-                                if (first) { commonRoot = root; first = false; }
-                                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
-                            }
+                    try {
+                        commonRoot = detectCommonRoot(data, StandardCharsets.UTF_8);
+                    } catch (IllegalArgumentException e) {
+                        if (e.getMessage() != null && e.getMessage().contains("MALFORMED")) {
+                            commonRoot = detectCommonRoot(data, Charset.forName("GBK"));
+                        } else {
+                            throw e;
                         }
                     }
 
@@ -109,8 +99,14 @@ public class SandboxService {
                     }
 
                     Files.createDirectories(creatorDir);
-                    try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                        extractZip(zis, creatorDir, commonRoot);
+                    try {
+                        try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
+                            extractZip(zis, creatorDir, commonRoot);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
+                            extractZip(zis, creatorDir, commonRoot);
+                        }
                     }
                 }
                 log.info("Skill-Creator refreshed successfully to: {}", creatorDir);
@@ -118,6 +114,30 @@ public class SandboxService {
         } catch (Exception e) {
             log.error("Failed to download or refresh global Skill-Creator", e);
         }
+    }
+
+    private String detectCommonRoot(byte[] data, Charset charset) throws IOException {
+        String commonRoot = null;
+        try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), charset)) {
+            ZipEntry entry;
+            boolean first = true;
+            while ((entry = zis.getNextEntry()) != null) {
+                String name = entry.getName().replace('\\', '/');
+                if (name.isEmpty() || name.equals("/")) continue;
+                int slashIdx = name.indexOf('/');
+                if (slashIdx == -1) {
+                    if (!entry.isDirectory()) { commonRoot = null; break; }
+                    String root = name;
+                    if (first) { commonRoot = root; first = false; }
+                    else if (!root.equals(commonRoot)) { commonRoot = null; break; }
+                } else {
+                    String root = name.substring(0, slashIdx);
+                    if (first) { commonRoot = root; first = false; }
+                    else if (!root.equals(commonRoot)) { commonRoot = null; break; }
+                }
+            }
+        }
+        return commonRoot;
     }
 
     private Path getBaselineRoot(String agentId) {
@@ -213,8 +233,21 @@ public class SandboxService {
         Set<String> skillsWithMd = new HashSet<>();
 
         storageService.writeLockedVoid(agentId, () -> {
-            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
+            // 尝试使用 UTF-8，如果报错则尝试 GBK (适配 Windows 压缩包)
+            try {
+                try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
+                    scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
+                }
+            } catch (IllegalArgumentException e) {
+                if (e.getMessage() != null && e.getMessage().contains("MALFORMED")) {
+                    affectedSkills.clear();
+                    skillsWithMd.clear();
+                    try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
+                        scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
+                    }
+                } else {
+                    throw e;
+                }
             }
             
             if (affectedSkills.isEmpty()) throw new RuntimeException("Validation Error: No valid skill directory found.");
@@ -225,8 +258,14 @@ public class SandboxService {
                 storageService.deleteRecursively(baselineSkillsDir.resolve(skill));
             }
 
-            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                extractZip(zis, baselineSkillsDir, null);
+            try {
+                try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
+                    extractZip(zis, baselineSkillsDir, null);
+                }
+            } catch (IllegalArgumentException e) {
+                try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
+                    extractZip(zis, baselineSkillsDir, null);
+                }
             }
         });
 
