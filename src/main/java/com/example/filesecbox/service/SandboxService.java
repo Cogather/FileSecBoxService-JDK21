@@ -83,9 +83,32 @@ public class SandboxService {
             if (conn.getResponseCode() == 200) {
                 try (java.io.InputStream is = conn.getInputStream()) {
                     byte[] data = storageService.readAllBytesFromInputStream(is);
+                    
+                    // 自动识别 zip 内是否存在唯一的根目录并剥离
+                    String commonRoot = null;
+                    try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
+                        ZipEntry entry;
+                        boolean first = true;
+                        while ((entry = zis.getNextEntry()) != null) {
+                            String name = entry.getName().replace('\\', '/');
+                            if (name.isEmpty() || name.equals("/")) continue;
+                            int slashIdx = name.indexOf('/');
+                            if (slashIdx == -1) {
+                                if (!entry.isDirectory()) { commonRoot = null; break; }
+                                String root = name;
+                                if (first) { commonRoot = root; first = false; }
+                                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
+                            } else {
+                                String root = name.substring(0, slashIdx);
+                                if (first) { commonRoot = root; first = false; }
+                                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
+                            }
+                        }
+                    }
+
                     Files.createDirectories(creatorDir);
                     try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                        extractZip(zis, creatorDir);
+                        extractZip(zis, creatorDir, commonRoot);
                     }
                 }
                 log.info("Skill-Creator installed successfully to: {}", creatorDir);
@@ -201,7 +224,7 @@ public class SandboxService {
             }
 
             try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                extractZip(zis, baselineSkillsDir);
+                extractZip(zis, baselineSkillsDir, null);
             }
         });
 
@@ -447,10 +470,19 @@ public class SandboxService {
         }
     }
 
-    private void extractZip(ZipInputStream zis, Path targetDir) throws IOException {
+    private void extractZip(ZipInputStream zis, Path targetDir, String rootToSkip) throws IOException {
         ZipEntry entry;
         while ((entry = zis.getNextEntry()) != null) {
-            Path entryPath = targetDir.resolve(entry.getName()).normalize();
+            String name = entry.getName().replace('\\', '/');
+            if (rootToSkip != null) {
+                if (name.equals(rootToSkip + "/")) continue;
+                if (name.startsWith(rootToSkip + "/")) {
+                    name = name.substring(rootToSkip.length() + 1);
+                }
+            }
+            if (name.isEmpty()) continue;
+
+            Path entryPath = targetDir.resolve(name).normalize();
             if (entry.isDirectory()) Files.createDirectories(entryPath);
             else {
                 Files.createDirectories(entryPath.getParent());
