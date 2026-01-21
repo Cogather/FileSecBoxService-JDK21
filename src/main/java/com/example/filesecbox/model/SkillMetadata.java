@@ -10,5 +10,6 @@ import lombok.NoArgsConstructor;
 public class SkillMetadata {
     private String name;
     private String description;
+    private String status; // UNCHANGED, MODIFIED, NEW, OUT_OF_SYNC
+    private String lastSyncTime;
 }
-
