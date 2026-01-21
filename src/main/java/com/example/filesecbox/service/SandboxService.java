@@ -68,13 +68,9 @@ public class SandboxService {
             return;
         }
         Path creatorDir = productRoot.resolve(SKILL_CREATOR_DIR);
-        if (Files.exists(creatorDir)) {
-            log.info("Skill Creator already exists at: {}", creatorDir);
-            return;
-        }
 
         try {
-            log.info("Downloading global Skill-Creator from: {}", skillCreatorUrl);
+            log.info("Downloading and refreshing global Skill-Creator from: {}", skillCreatorUrl);
             java.net.URL targetUrl = new java.net.URL(skillCreatorUrl);
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
             conn.setConnectTimeout(10000);
@@ -106,15 +102,21 @@ public class SandboxService {
                         }
                     }
 
+                    // 启动时覆盖逻辑：如果目录已存在，先删除
+                    if (Files.exists(creatorDir)) {
+                        log.info("Cleaning up existing Skill-Creator directory for refresh: {}", creatorDir);
+                        storageService.deleteRecursively(creatorDir);
+                    }
+
                     Files.createDirectories(creatorDir);
                     try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
                         extractZip(zis, creatorDir, commonRoot);
                     }
                 }
-                log.info("Skill-Creator installed successfully to: {}", creatorDir);
+                log.info("Skill-Creator refreshed successfully to: {}", creatorDir);
             }
         } catch (Exception e) {
-            log.error("Failed to download global Skill-Creator", e);
+            log.error("Failed to download or refresh global Skill-Creator", e);
         }
     }
 
