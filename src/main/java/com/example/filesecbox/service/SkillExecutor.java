@@ -180,14 +180,19 @@ public class SkillExecutor {
         String normArg = arg.replace("\\", "/").toLowerCase();
         
         if (normArg.contains(normRoot)) {
-            Path targetPath = Paths.get(arg).toAbsolutePath().normalize();
-            Path creatorPath = rootPath.resolve(SKILL_CREATOR_DIR).normalize();
-            
-            boolean inWorkspace = targetPath.startsWith(workingDir.toAbsolutePath().normalize());
-            boolean inGlobalTools = targetPath.startsWith(creatorPath);
-            
-            if (!inWorkspace && !inGlobalTools) {
-                throw new RuntimeException("Security Error: Accessing path outside workspace scope: " + arg);
+            try {
+                Path targetPath = Paths.get(arg).toAbsolutePath().normalize();
+                Path creatorPath = rootPath.resolve(SKILL_CREATOR_DIR).normalize();
+                
+                boolean inWorkspace = targetPath.startsWith(workingDir.toAbsolutePath().normalize());
+                boolean inGlobalTools = targetPath.startsWith(creatorPath);
+                
+                if (!inWorkspace && !inGlobalTools) {
+                    throw new RuntimeException("Security Error: Accessing path outside workspace scope: " + arg);
+                }
+            } catch (Exception e) {
+                if (e instanceof RuntimeException) throw (RuntimeException) e;
+                // 忽略非安全相关的解析异常，或根据需要记录日志
             }
         }
     }
