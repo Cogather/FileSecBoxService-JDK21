@@ -303,19 +303,23 @@ public class SandboxService {
 
                         SkillMetadata meta = parseSkillMd(skillEntry);
                         if (includeStatus) {
+                            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
                             long currentMtime = Files.getLastModifiedTime(skillEntry).toMillis();
-                            long lastSyncMtime = Long.parseLong(syncMeta.getProperty(skillName, "0"));
+                            long lastSyncMtime = Long.parseLong(syncMeta.getProperty(key, "0"));
                             Path blSkillPath = blSkillsDir.resolve(skillName);
                             
                             if (!Files.exists(blSkillPath)) {
                                 meta.setStatus("NEW");
                             } else {
                                 long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
-                                if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
-                                else if (blMtime > lastSyncMtime) meta.setStatus("OUT_OF_SYNC");
+                                if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
+                                else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
                                 else meta.setStatus("UNCHANGED");
                             }
                             meta.setLastSyncTime(formatTime(lastSyncMtime));
+                        } else {
+                            meta.setStatus(null);
+                            meta.setLastSyncTime(null);
                         }
                         metadataList.add(meta);
                     }
@@ -328,8 +332,9 @@ public class SandboxService {
                         String skillName = blEntry.getFileName().toString();
                         if (Files.isDirectory(blEntry) && !processedSkills.contains(skillName)) {
                             SkillMetadata meta = parseSkillMd(blEntry);
+                            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
                             meta.setStatus("DELETED");
-                            meta.setLastSyncTime(syncMeta.getProperty(skillName, "N/A"));
+                            meta.setLastSyncTime(formatTime(Long.parseLong(syncMeta.getProperty(key, "0"))));
                             metadataList.add(meta);
                         }
                     }
@@ -363,10 +368,41 @@ public class SandboxService {
             } else {
                 throw new IOException("Skill not found in both workspace and baseline: " + skillName);
             }
-            updateWorkspaceMeta(workspaceRoot);
+            updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
         });
 
         return "Baseline synchronized for skill: " + skillName;
+    }
+
+    private void updateWorkspaceMetaForSkill(Path workspaceRoot, String agentId, String skillName) throws IOException {
+        log.info("Updating workspace meta for skill: {} in workspace: {}, agentId: {}", skillName, workspaceRoot, agentId);
+        Path metaFile = workspaceRoot.resolve(META_DIR).resolve("skills_sync.properties");
+        Properties props = new Properties();
+        if (Files.exists(metaFile)) {
+            try (java.io.InputStream is = Files.newInputStream(metaFile)) {
+                props.load(is);
+            }
+        }
+        Path blSkillPath = getBaselineRoot(agentId).resolve("skills").resolve(skillName);
+        Path wsSkillPath = workspaceRoot.resolve("skills").resolve(skillName);
+
+        log.info("Checking baseline path: {}", blSkillPath);
+        if (Files.exists(blSkillPath) && Files.isDirectory(blSkillPath)) {
+            java.nio.file.attribute.FileTime blTime = Files.getLastModifiedTime(blSkillPath);
+            log.info("Baseline exists. Mtime: {}. Updating workspace skill path: {}", blTime.toMillis(), wsSkillPath);
+            if (Files.exists(wsSkillPath)) {
+                Files.setLastModifiedTime(wsSkillPath, blTime);
+            }
+            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
+            props.setProperty(key, String.valueOf(blTime.toMillis()));
+        } else {
+            log.warn("Baseline skill path does not exist or is not a directory: {}", blSkillPath);
+            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
+            props.remove(key);
+        }
+        try (java.io.OutputStream os = Files.newOutputStream(metaFile)) {
+            props.store(os, "Workspace Sync Metadata Updated (Aligned with Base64 Keys)");
+        }
     }
 
     public String deleteSkill(String userId, String agentId, String skillName) throws IOException {
@@ -449,6 +485,9 @@ public class SandboxService {
         storageService.writeLockedVoid(agentId, () -> {
             storageService.writeBytes(physicalPath, request.getContent().getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            if (request.getFilePath().startsWith("skills/")) {
+                touchSkillDirectory(userId, agentId, request.getFilePath());
+            }
         });
         return "Written to workspace: " + request.getFilePath();
     }
@@ -458,8 +497,27 @@ public class SandboxService {
         Path physicalPath = resolveLogicalPath(userId, agentId, request.getFilePath());
         storageService.writeLockedVoid(agentId, () -> {
             storageService.preciseEdit(physicalPath, request.getOldString(), request.getNewString(), request.getExpectedReplacements());
+            if (request.getFilePath().startsWith("skills/")) {
+                touchSkillDirectory(userId, agentId, request.getFilePath());
+            }
         });
         return "Edited in workspace: " + request.getFilePath();
+    }
+
+    private void touchSkillDirectory(String userId, String agentId, String logicalPath) {
+        try {
+            String[] parts = logicalPath.split("/");
+            if (parts.length >= 2 && parts[0].equals("skills")) {
+                String skillName = parts[1];
+                Path skillDir = getWorkspaceRoot(userId, agentId).resolve("skills").resolve(skillName);
+                if (Files.exists(skillDir) && Files.isDirectory(skillDir)) {
+                    Files.setLastModifiedTime(skillDir, java.nio.file.attribute.FileTime.from(java.time.Instant.now()));
+                    log.info("Touched skill directory to update mtime: {}", skillDir);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to touch skill directory: {}", logicalPath, e);
+        }
     }
 
     public ExecutionResult execute(String userId, String agentId, CommandRequest request) throws Exception {

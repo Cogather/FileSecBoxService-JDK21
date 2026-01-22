@@ -32,6 +32,8 @@ public class SkillExecutor {
 
     private static final int TIMEOUT_SECONDS = 300; // 5分钟超时
 
+    private static final String SKILL_CREATOR_DIR = "skill-creator";
+
     public ExecutionResult executeInDir(Path workingDir, String commandLine) throws Exception {
         boolean isWin = System.getProperty("os.name").toLowerCase().contains("win");
         Charset sysCharset = isWin ? Charset.forName("GBK") : StandardCharsets.UTF_8;
@@ -61,7 +63,8 @@ public class SkillExecutor {
                 if (potentialPath.contains("/") || potentialPath.contains("\\") || potentialPath.contains(".")) {
                     String normalized = potentialPath.replace('\\', '/').toLowerCase();
                     if (!normalized.startsWith("skills/") && !normalized.startsWith("files/") &&
-                        !normalized.equals("skills") && !normalized.equals("files")) {
+                        !normalized.equals("skills") && !normalized.equals("files") &&
+                        !normalized.startsWith("skills/" + SKILL_CREATOR_DIR)) {
                         throw new RuntimeException("Security Error: Path '" + potentialPath + "' is out of operable scope. Must start with 'skills/' or 'files/'.");
                     }
 
@@ -139,12 +142,18 @@ public class SkillExecutor {
 
     private void validatePathSecurity(String arg, Path workingDir, boolean isWin) {
         String productRoot = isWin ? productRootWin : productRootLinux;
-        String normRoot = Paths.get(productRoot).toAbsolutePath().normalize().toString().replace("\\", "/").toLowerCase();
+        Path rootPath = Paths.get(productRoot).toAbsolutePath().normalize();
+        String normRoot = rootPath.toString().replace("\\", "/").toLowerCase();
         String normArg = arg.replace("\\", "/").toLowerCase();
         
         if (normArg.contains(normRoot)) {
             Path targetPath = Paths.get(arg).toAbsolutePath().normalize();
-            if (!targetPath.startsWith(workingDir.toAbsolutePath().normalize())) {
+            Path creatorPath = rootPath.resolve(SKILL_CREATOR_DIR).normalize();
+            
+            boolean inWorkspace = targetPath.startsWith(workingDir.toAbsolutePath().normalize());
+            boolean inGlobalTools = targetPath.startsWith(creatorPath);
+            
+            if (!inWorkspace && !inGlobalTools) {
                 throw new RuntimeException("Security Error: Accessing path outside workspace scope: " + arg);
             }
         }
