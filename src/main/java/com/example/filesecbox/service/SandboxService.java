@@ -298,7 +298,6 @@ public class SandboxService {
                 for (Path skillEntry : stream) {
                     if (Files.isDirectory(skillEntry) && Files.exists(skillEntry.resolve("SKILL.md"))) {
                         String skillName = skillEntry.getFileName().toString();
-                        if (skillName.equals(SKILL_CREATOR_DIR)) continue; 
                         processedSkills.add(skillName);
 
                         SkillMetadata meta = parseSkillMd(skillEntry);
@@ -340,6 +339,21 @@ public class SandboxService {
                     }
                 }
             }
+
+            // 补充：默认返回全局的 skill-creator
+            Path globalCreatorPath = productRoot.resolve(SKILL_CREATOR_DIR);
+            if (Files.exists(globalCreatorPath) && Files.isDirectory(globalCreatorPath)) {
+                String creatorName = globalCreatorPath.getFileName().toString();
+                if (metadataList.stream().noneMatch(m -> m.getName().equals(creatorName))) {
+                    SkillMetadata creatorMeta = parseSkillMd(globalCreatorPath);
+                    if (includeStatus) {
+                        creatorMeta.setStatus("UNCHANGED");
+                        creatorMeta.setLastSyncTime("System");
+                    }
+                    metadataList.add(creatorMeta);
+                }
+            }
+
             return metadataList;
         });
     }
