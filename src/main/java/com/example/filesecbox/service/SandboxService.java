@@ -153,7 +153,8 @@ public class SandboxService {
 
     private Path getWorkspaceRoot(String userId, String agentId) {
         Path workspaceRoot = productRoot.resolve(agentId).resolve(WORKSPACES_DIR).resolve(userId).normalize();
-        if (!Files.exists(workspaceRoot)) {
+        Path skillsDir = workspaceRoot.resolve("skills");
+        if (!Files.exists(workspaceRoot) || !Files.exists(skillsDir)) {
             syncWorkspaceFromBaseline(userId, agentId);
         }
         return workspaceRoot;
