@@ -240,17 +240,14 @@ public class SandboxService {
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         Path physicalPath = workspaceRoot.resolve(logicalPath).normalize();
 
-        // --- 新增：冗余目录智能寻址逻辑 (Flattening) ---
+        // --- 冗余目录智能寻址 (Flattening) ---
         if (logicalPath.startsWith("skills/")) {
             String[] parts = logicalPath.split("/");
             if (parts.length >= 2) {
                 String skillName = parts[1];
                 Path skillRoot = workspaceRoot.resolve("skills").resolve(skillName);
-                
-                // 探测逻辑：如果 skills/A 目录下只有一个名为 A 的子目录，且没有其他任何内容
                 Path nestedPath = isRedundantDirectory(skillRoot, skillName);
                 if (nestedPath != null) {
-                    // 构建重定向后的物理路径
                     String subPathAfterSkill = logicalPath.substring(("skills/" + skillName).length());
                     if (subPathAfterSkill.startsWith("/")) subPathAfterSkill = subPathAfterSkill.substring(1);
                     physicalPath = nestedPath.resolve(subPathAfterSkill).normalize();
@@ -265,17 +262,20 @@ public class SandboxService {
     private Path isRedundantDirectory(Path dir, String expectedName) {
         try {
             if (!Files.exists(dir) || !Files.isDirectory(dir)) return null;
+            // 判定标准：一级目录没有 SKILL.md，且仅包含唯一的同名子目录 (符合 "A下面没有任何内容")
+            if (Files.exists(dir.resolve("SKILL.md"))) return null;
+            Path nested = dir.resolve(expectedName);
+            if (!Files.exists(nested) || !Files.isDirectory(nested)) return null;
+            
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
                 Iterator<Path> it = stream.iterator();
                 if (it.hasNext()) {
-                    Path first = it.next();
-                    // 必须满足：只有一个条目 && 该条目是目录 && 目录名与父目录一致
-                    if (!it.hasNext() && Files.isDirectory(first) && first.getFileName().toString().equals(expectedName)) {
-                        return first;
-                    }
+                    it.next(); // 跳过第一个 (即 nested)
+                    if (it.hasNext()) return null; // 还有其他东西，不视为冗余
                 }
             }
-        } catch (IOException ignored) {}
+            return nested;
+        } catch (Exception ignored) {}
         return null;
     }
 
@@ -445,10 +445,14 @@ public class SandboxService {
 
         storageService.writeLockedVoid(agentId, () -> {
             if (Files.exists(workspaceSkill)) {
+                // 如果工作空间是冗余结构，则只推送内部实际内容到基线 (实现扁平化)
+                Path actualSource = isRedundantDirectory(workspaceSkill, skillName);
+                if (actualSource == null) actualSource = workspaceSkill;
+
                 storageService.deleteRecursively(baselineSkill);
                 Files.createDirectories(baselineSkill.getParent());
-                FileSystemUtils.copyRecursively(workspaceSkill, baselineSkill);
-                log.info("Baseline updated for skill: {}", skillName);
+                FileSystemUtils.copyRecursively(actualSource, baselineSkill);
+                log.info("Baseline updated for skill: {} (flattened if needed)", skillName);
             } else if (Files.exists(baselineSkill)) {
                 storageService.deleteRecursively(baselineSkill);
                 log.info("Baseline deleted for skill: {}", skillName);
@@ -619,12 +623,35 @@ public class SandboxService {
     public ExecutionResult execute(String userId, String agentId, CommandRequest request) throws Exception {
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         String command = request.getCommand().trim();
+        
+        // 1. 重定向 skill-creator
         String creatorLogical = "skills/" + SKILL_CREATOR_DIR;
         if (command.contains(creatorLogical)) {
             String creatorPhysical = productRoot.resolve(SKILL_CREATOR_DIR).toAbsolutePath().toString().replace("\\", "/");
             command = command.replace(creatorLogical, creatorPhysical);
-            log.info("Command redirected for skill-creator: {}", command);
         }
+        
+        // 2. 智能重定向冗余技能目录 (A/A -> A)
+        Path wsSkillsDir = workspaceRoot.resolve("skills");
+        if (Files.exists(wsSkillsDir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
+                for (Path skillEntry : stream) {
+                    if (Files.isDirectory(skillEntry)) {
+                        String skillName = skillEntry.getFileName().toString();
+                        if (isRedundantDirectory(skillEntry, skillName) != null) {
+                            String logicalMatch = "skills/" + skillName + "/";
+                            String physicalReplacement = "skills/" + skillName + "/" + skillName + "/";
+                            if (command.contains(logicalMatch)) {
+                                command = command.replace(logicalMatch, physicalReplacement);
+                            } else if (command.endsWith("skills/" + skillName) || command.contains("skills/" + skillName + " ")) {
+                                command = command.replace("skills/" + skillName, "skills/" + skillName + "/" + skillName);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         return skillExecutor.executeInDir(workspaceRoot, command);
     }
 
