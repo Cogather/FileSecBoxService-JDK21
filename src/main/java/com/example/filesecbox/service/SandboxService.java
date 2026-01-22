@@ -599,6 +599,11 @@ public class SandboxService {
         ZipEntry entry;
         while ((entry = zis.getNextEntry()) != null) {
             String name = entry.getName().replace('\\', '/');
+            // 忽略 macOS 自动生成的冗余目录
+            if (name.startsWith("__MACOSX/") || name.contains("/.__")) {
+                zis.closeEntry();
+                continue;
+            }
             int slash = name.indexOf('/');
             if (slash != -1) {
                 String skillName = name.substring(0, slash);
@@ -615,6 +620,11 @@ public class SandboxService {
         ZipEntry entry;
         while ((entry = zis.getNextEntry()) != null) {
             String name = entry.getName().replace('\\', '/');
+            // 忽略 macOS 自动生成的冗余目录
+            if (name.startsWith("__MACOSX/") || name.contains("/.__")) {
+                zis.closeEntry();
+                continue;
+            }
             if (rootToSkip != null) {
                 if (name.equals(rootToSkip + "/")) continue;
                 if (name.startsWith(rootToSkip + "/")) {
