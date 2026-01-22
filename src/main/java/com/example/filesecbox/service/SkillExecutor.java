@@ -97,10 +97,15 @@ public class SkillExecutor {
                     // --- 新增：自动创建目录逻辑 ---
                     try {
                         String cleanPath = potentialPath.replace('\\', '/');
-                        Path targetPath = workingDir.resolve(cleanPath).normalize();
-                        Path dirToCreate = cleanPath.contains(".") ? targetPath.getParent() : targetPath;
-                        if (dirToCreate != null && !java.nio.file.Files.exists(dirToCreate)) {
-                            java.nio.file.Files.createDirectories(dirToCreate);
+                        // 如果是绝对路径（包含驱动器盘符），则不尝试在 workingDir 下 resolve，避免 InvalidPathException
+                        if (cleanPath.contains(":/") || cleanPath.startsWith("/")) {
+                            // 绝对路径不执行自动创建目录逻辑，由系统环境保证
+                        } else {
+                            Path targetPath = workingDir.resolve(cleanPath).normalize();
+                            Path dirToCreate = cleanPath.contains(".") ? targetPath.getParent() : targetPath;
+                            if (dirToCreate != null && !java.nio.file.Files.exists(dirToCreate)) {
+                                java.nio.file.Files.createDirectories(dirToCreate);
+                            }
                         }
                     } catch (Exception ignored) {}
                 }
