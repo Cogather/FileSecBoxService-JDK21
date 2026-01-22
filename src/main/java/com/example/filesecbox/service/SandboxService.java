@@ -534,6 +534,9 @@ public class SandboxService {
         }
         validateSkillMdPlacement(request.getFilePath());
         Path physicalPath = resolveLogicalPath(userId, agentId, request.getFilePath());
+        if (!Files.exists(physicalPath)) {
+            throw new IOException("Edit Error: File not found: " + request.getFilePath());
+        }
         storageService.writeLockedVoid(agentId, () -> {
             storageService.preciseEdit(physicalPath, request.getOldString(), request.getNewString(), request.getExpectedReplacements());
             if (request.getFilePath().startsWith("skills/")) {
