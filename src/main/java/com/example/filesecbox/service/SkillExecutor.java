@@ -97,9 +97,10 @@ public class SkillExecutor {
                     // --- 新增：自动创建目录逻辑 ---
                     try {
                         String cleanPath = potentialPath.replace('\\', '/');
-                        // 如果是绝对路径（包含驱动器盘符），则不尝试在 workingDir 下 resolve，避免 InvalidPathException
-                        if (cleanPath.contains(":/") || cleanPath.startsWith("/")) {
-                            // 绝对路径不执行自动创建目录逻辑，由系统环境保证
+                        // 仅当路径包含 Windows 盘符（如 C:）时跳过 resolve，避免 InvalidPathException
+                        // 对于以 / 开头的路径，在 Windows 下 resolve 会被视为当前盘符下的绝对路径，在 Linux 下是绝对路径，通常是安全的
+                        if (cleanPath.contains(":")) {
+                            // 包含盘符的绝对路径不执行自动创建目录逻辑
                         } else {
                             Path targetPath = workingDir.resolve(cleanPath).normalize();
                             Path dirToCreate = cleanPath.contains(".") ? targetPath.getParent() : targetPath;
