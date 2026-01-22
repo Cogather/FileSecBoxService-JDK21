@@ -180,19 +180,27 @@ public class SkillExecutor {
         String normArg = arg.replace("\\", "/").toLowerCase();
         
         if (normArg.contains(normRoot)) {
-            try {
-                Path targetPath = Paths.get(arg).toAbsolutePath().normalize();
-                Path creatorPath = rootPath.resolve(SKILL_CREATOR_DIR).normalize();
+            // 提取指令中的所有潜在路径片段进行校验
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\"([^\"]+)\"|([^\\s><|&]+)").matcher(arg);
+            while (matcher.find()) {
+                String potentialPath = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+                String normPotential = potentialPath.replace('\\', '/').toLowerCase();
                 
-                boolean inWorkspace = targetPath.startsWith(workingDir.toAbsolutePath().normalize());
-                boolean inGlobalTools = targetPath.startsWith(creatorPath);
-                
-                if (!inWorkspace && !inGlobalTools) {
-                    throw new RuntimeException("Security Error: Accessing path outside workspace scope: " + arg);
+                if (normPotential.contains(normRoot)) {
+                    try {
+                        Path targetPath = Paths.get(potentialPath).toAbsolutePath().normalize();
+                        Path creatorPath = rootPath.resolve(SKILL_CREATOR_DIR).normalize();
+                        
+                        boolean inWorkspace = targetPath.startsWith(workingDir.toAbsolutePath().normalize());
+                        boolean inGlobalTools = targetPath.startsWith(creatorPath);
+                        
+                        if (!inWorkspace && !inGlobalTools) {
+                            throw new RuntimeException("Security Error: Accessing path outside workspace scope: " + potentialPath);
+                        }
+                    } catch (Exception e) {
+                        if (e instanceof RuntimeException) throw (RuntimeException) e;
+                    }
                 }
-            } catch (Exception e) {
-                if (e instanceof RuntimeException) throw (RuntimeException) e;
-                // 忽略非安全相关的解析异常，或根据需要记录日志
             }
         }
     }
