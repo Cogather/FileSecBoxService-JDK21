@@ -513,6 +513,9 @@ public class SandboxService {
     }
 
     public String write(String userId, String agentId, WriteRequest request) throws IOException {
+        if (request.getFilePath().startsWith("skills/" + SKILL_CREATOR_DIR)) {
+            throw new RuntimeException("Security Error: Writing to skill-creator is strictly forbidden.");
+        }
         validateSkillMdPlacement(request.getFilePath());
         Path physicalPath = resolveLogicalPath(userId, agentId, request.getFilePath());
         storageService.writeLockedVoid(agentId, () -> {
@@ -526,6 +529,9 @@ public class SandboxService {
     }
 
     public String edit(String userId, String agentId, EditRequest request) throws IOException {
+        if (request.getFilePath().startsWith("skills/" + SKILL_CREATOR_DIR)) {
+            throw new RuntimeException("Security Error: Editing skill-creator is strictly forbidden.");
+        }
         validateSkillMdPlacement(request.getFilePath());
         Path physicalPath = resolveLogicalPath(userId, agentId, request.getFilePath());
         storageService.writeLockedVoid(agentId, () -> {
