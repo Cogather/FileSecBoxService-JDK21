@@ -307,19 +307,6 @@ public class SandboxService {
         Set<String> skillsWithMd = new HashSet<>();
 
         storageService.writeLockedVoid(agentId, () -> {
-            // 自动识别 zip 内是否存在唯一的根目录并剥离 (实现扁平化入库)
-            String commonRoot = null;
-            try {
-                commonRoot = detectCommonRoot(data, StandardCharsets.UTF_8);
-            } catch (IllegalArgumentException e) {
-                if (e.getMessage() != null && e.getMessage().contains("MALFORMED")) {
-                    commonRoot = detectCommonRoot(data, Charset.forName("GBK"));
-                } else {
-                    throw e;
-                }
-            }
-            final String finalCommonRoot = commonRoot;
-
             try {
                 try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
                     scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
@@ -344,11 +331,11 @@ public class SandboxService {
 
             try {
                 try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
-                    extractZip(zis, baselineSkillsDir, finalCommonRoot);
+                    extractZip(zis, baselineSkillsDir, null);
                 }
             } catch (IllegalArgumentException e) {
                 try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data), Charset.forName("GBK"))) {
-                    extractZip(zis, baselineSkillsDir, finalCommonRoot);
+                    extractZip(zis, baselineSkillsDir, null);
                 }
             }
             
