@@ -181,10 +181,17 @@ public class SandboxService {
         try {
             log.info("Syncing workspace for user: {} agent: {}", userId, agentId);
             Files.createDirectories(workspaceRoot);
+            
+            // --- 物理压缩处理 (基线层 A/A -> A) ---
+            flattenAllSkills(baselineRoot.resolve("skills"));
+
             if (Files.exists(baselineRoot)) {
                 FileSystemUtils.copyRecursively(baselineRoot, workspaceRoot);
             }
             
+            // --- 物理压缩处理 (工作空间层 A/A -> A) ---
+            flattenAllSkills(workspaceRoot.resolve("skills"));
+
             // 兜底：确保工作区下的核心目录一定存在，防止基线拷贝不完整
             Files.createDirectories(workspaceRoot.resolve("skills"));
             Files.createDirectories(workspaceRoot.resolve("files"));
@@ -196,6 +203,34 @@ public class SandboxService {
         } catch (IOException e) {
             log.error("Failed to sync workspace", e);
             throw new RuntimeException("Failed to initialize user workspace", e);
+        }
+    }
+
+    private void flattenAllSkills(Path skillsDir) {
+        if (!Files.exists(skillsDir)) return;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(skillsDir)) {
+            for (Path skillEntry : stream) {
+                if (Files.isDirectory(skillEntry)) {
+                    physicallyFlattenSkill(skillEntry, skillEntry.getFileName().toString());
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Failed to scan skills for flattening: {}", skillsDir, e);
+        }
+    }
+
+    private void physicallyFlattenSkill(Path skillDir, String skillName) {
+        Path nested = isRedundantDirectory(skillDir, skillName);
+        if (nested != null) {
+            try {
+                log.info("Physically flattening redundant directory: {}/{}", skillName, skillName);
+                Path tempDir = skillDir.getParent().resolve(skillName + "_tmp_" + System.currentTimeMillis());
+                Files.move(nested, tempDir);
+                storageService.deleteRecursively(skillDir);
+                Files.move(tempDir, skillDir);
+            } catch (IOException e) {
+                log.error("Failed to physically flatten directory: {}", skillDir, e);
+            }
         }
     }
 
@@ -239,22 +274,6 @@ public class SandboxService {
         }
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         Path physicalPath = workspaceRoot.resolve(logicalPath).normalize();
-
-        // --- 冗余目录智能寻址 (Flattening) ---
-        if (logicalPath.startsWith("skills/")) {
-            String[] parts = logicalPath.split("/");
-            if (parts.length >= 2) {
-                String skillName = parts[1];
-                Path skillRoot = workspaceRoot.resolve("skills").resolve(skillName);
-                Path nestedPath = isRedundantDirectory(skillRoot, skillName);
-                if (nestedPath != null) {
-                    String subPathAfterSkill = logicalPath.substring(("skills/" + skillName).length());
-                    if (subPathAfterSkill.startsWith("/")) subPathAfterSkill = subPathAfterSkill.substring(1);
-                    physicalPath = nestedPath.resolve(subPathAfterSkill).normalize();
-                }
-            }
-        }
-
         storageService.validateScope(physicalPath, workspaceRoot);
         return physicalPath;
     }
@@ -332,6 +351,9 @@ public class SandboxService {
                     extractZip(zis, baselineSkillsDir, finalCommonRoot);
                 }
             }
+            
+            // --- 物理压缩处理 (A/A -> A) ---
+            flattenAllSkills(baselineSkillsDir);
         });
 
         return "Baseline updated successfully. Skills: " + affectedSkills;
@@ -352,6 +374,9 @@ public class SandboxService {
         }
 
         Path blSkillsDir = getBaselineRoot(agentId).resolve("skills");
+        
+        // --- 物理压缩处理 (基线层 A/A -> A) ---
+        flattenAllSkills(blSkillsDir);
 
         return storageService.readLocked(agentId, () -> {
             List<SkillMetadata> metadataList = new ArrayList<>();
@@ -360,39 +385,31 @@ public class SandboxService {
             if (Files.exists(wsSkillsDir)) {
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
                     for (Path skillEntry : stream) {
-                        if (Files.isDirectory(skillEntry)) {
+                        if (Files.isDirectory(skillEntry) && Files.exists(skillEntry.resolve("SKILL.md"))) {
                             String skillName = skillEntry.getFileName().toString();
-                            // 探测冗余目录 (A/A 结构)
-                            Path actualSkillDir = isRedundantDirectory(skillEntry, skillName);
-                            if (actualSkillDir == null) actualSkillDir = skillEntry;
+                            processedSkills.add(skillName);
 
-                            // 只要有一个层级下包含 SKILL.md，即视为有效技能
-                            if (Files.exists(actualSkillDir.resolve("SKILL.md"))) {
-                                processedSkills.add(skillName);
-                                SkillMetadata meta = parseSkillMd(actualSkillDir);
-                                meta.setName(skillName); // 逻辑名称始终保持为一级目录名
-
-                                if (includeStatus) {
-                                    String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
-                                    long currentMtime = Files.getLastModifiedTime(actualSkillDir).toMillis();
-                                    long lastSyncMtime = Long.parseLong(syncMeta.getProperty(key, "0"));
-                                    Path blSkillPath = blSkillsDir.resolve(skillName);
-                                    
-                                    if (!Files.exists(blSkillPath)) {
-                                        meta.setStatus("NEW");
-                                    } else {
-                                        long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
-                                        if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
-                                        else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
-                                        else meta.setStatus("UNCHANGED");
-                                    }
-                                    meta.setLastSyncTime(formatTime(lastSyncMtime));
+                            SkillMetadata meta = parseSkillMd(skillEntry);
+                            if (includeStatus) {
+                                String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
+                                long currentMtime = Files.getLastModifiedTime(skillEntry).toMillis();
+                                long lastSyncMtime = Long.parseLong(syncMeta.getProperty(key, "0"));
+                                Path blSkillPath = blSkillsDir.resolve(skillName);
+                                
+                                if (!Files.exists(blSkillPath)) {
+                                    meta.setStatus("NEW");
                                 } else {
-                                    meta.setStatus(null);
-                                    meta.setLastSyncTime(null);
+                                    long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
+                                    if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
+                                    else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
+                                    else meta.setStatus("UNCHANGED");
                                 }
-                                metadataList.add(meta);
+                                meta.setLastSyncTime(formatTime(lastSyncMtime));
+                            } else {
+                                meta.setStatus(null);
+                                meta.setLastSyncTime(null);
                             }
+                            metadataList.add(meta);
                         }
                     }
                 }
@@ -445,14 +462,14 @@ public class SandboxService {
 
         storageService.writeLockedVoid(agentId, () -> {
             if (Files.exists(workspaceSkill)) {
-                // 如果工作空间是冗余结构，则只推送内部实际内容到基线 (实现扁平化)
-                Path actualSource = isRedundantDirectory(workspaceSkill, skillName);
-                if (actualSource == null) actualSource = workspaceSkill;
-
                 storageService.deleteRecursively(baselineSkill);
                 Files.createDirectories(baselineSkill.getParent());
-                FileSystemUtils.copyRecursively(actualSource, baselineSkill);
-                log.info("Baseline updated for skill: {} (flattened if needed)", skillName);
+                FileSystemUtils.copyRecursively(workspaceSkill, baselineSkill);
+                
+                // --- 物理压缩处理 (A/A -> A) ---
+                physicallyFlattenSkill(baselineSkill, skillName);
+                
+                log.info("Baseline updated for skill: {}", skillName);
             } else if (Files.exists(baselineSkill)) {
                 storageService.deleteRecursively(baselineSkill);
                 log.info("Baseline deleted for skill: {}", skillName);
@@ -623,36 +640,18 @@ public class SandboxService {
     public ExecutionResult execute(String userId, String agentId, CommandRequest request) throws Exception {
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         String command = request.getCommand().trim();
-        
-        // 1. 重定向 skill-creator
         String creatorLogical = "skills/" + SKILL_CREATOR_DIR;
         if (command.contains(creatorLogical)) {
             String creatorPhysical = productRoot.resolve(SKILL_CREATOR_DIR).toAbsolutePath().toString().replace("\\", "/");
             command = command.replace(creatorLogical, creatorPhysical);
+            log.info("Command redirected for skill-creator: {}", command);
         }
+        ExecutionResult result = skillExecutor.executeInDir(workspaceRoot, command);
         
-        // 2. 智能重定向冗余技能目录 (A/A -> A)
-        Path wsSkillsDir = workspaceRoot.resolve("skills");
-        if (Files.exists(wsSkillsDir)) {
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
-                for (Path skillEntry : stream) {
-                    if (Files.isDirectory(skillEntry)) {
-                        String skillName = skillEntry.getFileName().toString();
-                        if (isRedundantDirectory(skillEntry, skillName) != null) {
-                            String logicalMatch = "skills/" + skillName + "/";
-                            String physicalReplacement = "skills/" + skillName + "/" + skillName + "/";
-                            if (command.contains(logicalMatch)) {
-                                command = command.replace(logicalMatch, physicalReplacement);
-                            } else if (command.endsWith("skills/" + skillName) || command.contains("skills/" + skillName + " ")) {
-                                command = command.replace("skills/" + skillName, "skills/" + skillName + "/" + skillName);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // --- 物理压缩处理 (A/A -> A) ---
+        flattenAllSkills(workspaceRoot.resolve("skills"));
         
-        return skillExecutor.executeInDir(workspaceRoot, command);
+        return result;
     }
 
     public String deleteFile(String userId, String agentId, String logicalPath) throws IOException {
