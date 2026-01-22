@@ -154,10 +154,24 @@ public class SandboxService {
     private Path getWorkspaceRoot(String userId, String agentId) {
         Path workspaceRoot = productRoot.resolve(agentId).resolve(WORKSPACES_DIR).resolve(userId).normalize();
         Path skillsDir = workspaceRoot.resolve("skills");
-        if (!Files.exists(workspaceRoot) || !Files.exists(skillsDir)) {
+        try {
+            if (!Files.exists(workspaceRoot) || !Files.exists(skillsDir) || isDirectoryEmpty(skillsDir)) {
+                syncWorkspaceFromBaseline(userId, agentId);
+            }
+        } catch (IOException e) {
+            log.error("Failed to check workspace status, triggering sync anyway", e);
             syncWorkspaceFromBaseline(userId, agentId);
         }
         return workspaceRoot;
+    }
+
+    private boolean isDirectoryEmpty(Path path) throws IOException {
+        if (Files.isDirectory(path)) {
+            try (DirectoryStream<Path> entries = Files.newDirectoryStream(path)) {
+                return !entries.iterator().hasNext();
+            }
+        }
+        return false;
     }
 
     private void syncWorkspaceFromBaseline(String userId, String agentId) {
@@ -170,6 +184,10 @@ public class SandboxService {
             if (Files.exists(baselineRoot)) {
                 FileSystemUtils.copyRecursively(baselineRoot, workspaceRoot);
             }
+            
+            // 兜底：确保工作区下的核心目录一定存在，防止基线拷贝不完整
+            Files.createDirectories(workspaceRoot.resolve("skills"));
+            Files.createDirectories(workspaceRoot.resolve("files"));
             
             Path metaDir = workspaceRoot.resolve(META_DIR);
             Files.createDirectories(metaDir);
@@ -277,8 +295,6 @@ public class SandboxService {
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         Path wsSkillsDir = workspaceRoot.resolve("skills");
         
-        if (!Files.exists(wsSkillsDir)) return Collections.emptyList();
-
         Properties syncMeta = new Properties();
         if (includeStatus) {
             Path metaFile = workspaceRoot.resolve(META_DIR).resolve("skills_sync.properties");
@@ -295,33 +311,35 @@ public class SandboxService {
             List<SkillMetadata> metadataList = new ArrayList<>();
             Set<String> processedSkills = new HashSet<>();
 
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
-                for (Path skillEntry : stream) {
-                    if (Files.isDirectory(skillEntry) && Files.exists(skillEntry.resolve("SKILL.md"))) {
-                        String skillName = skillEntry.getFileName().toString();
-                        processedSkills.add(skillName);
+            if (Files.exists(wsSkillsDir)) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
+                    for (Path skillEntry : stream) {
+                        if (Files.isDirectory(skillEntry) && Files.exists(skillEntry.resolve("SKILL.md"))) {
+                            String skillName = skillEntry.getFileName().toString();
+                            processedSkills.add(skillName);
 
-                        SkillMetadata meta = parseSkillMd(skillEntry);
-                        if (includeStatus) {
-                            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
-                            long currentMtime = Files.getLastModifiedTime(skillEntry).toMillis();
-                            long lastSyncMtime = Long.parseLong(syncMeta.getProperty(key, "0"));
-                            Path blSkillPath = blSkillsDir.resolve(skillName);
-                            
-                            if (!Files.exists(blSkillPath)) {
-                                meta.setStatus("NEW");
+                            SkillMetadata meta = parseSkillMd(skillEntry);
+                            if (includeStatus) {
+                                String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
+                                long currentMtime = Files.getLastModifiedTime(skillEntry).toMillis();
+                                long lastSyncMtime = Long.parseLong(syncMeta.getProperty(key, "0"));
+                                Path blSkillPath = blSkillsDir.resolve(skillName);
+                                
+                                if (!Files.exists(blSkillPath)) {
+                                    meta.setStatus("NEW");
+                                } else {
+                                    long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
+                                    if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
+                                    else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
+                                    else meta.setStatus("UNCHANGED");
+                                }
+                                meta.setLastSyncTime(formatTime(lastSyncMtime));
                             } else {
-                                long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
-                                if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
-                                else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
-                                else meta.setStatus("UNCHANGED");
+                                meta.setStatus(null);
+                                meta.setLastSyncTime(null);
                             }
-                            meta.setLastSyncTime(formatTime(lastSyncMtime));
-                        } else {
-                            meta.setStatus(null);
-                            meta.setLastSyncTime(null);
+                            metadataList.add(meta);
                         }
-                        metadataList.add(meta);
                     }
                 }
             }
