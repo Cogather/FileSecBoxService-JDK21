@@ -325,6 +325,11 @@ public class SandboxService {
             
             if (affectedSkills.isEmpty()) throw new RuntimeException("Validation Error: No valid skill directory found.");
             
+            // --- 新增：禁止上传名为 skill-creator 的技能 ---
+            if (affectedSkills.contains(SKILL_CREATOR_DIR)) {
+                throw new RuntimeException("Validation Error: Skill name '" + SKILL_CREATOR_DIR + "' is reserved for system tools and cannot be uploaded.");
+            }
+            
             for (String skill : affectedSkills) {
                 storageService.deleteRecursively(baselineSkillsDir.resolve(skill));
             }
