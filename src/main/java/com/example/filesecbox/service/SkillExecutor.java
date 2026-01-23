@@ -24,7 +24,7 @@ public class SkillExecutor {
     @Value("${app.product.root.linux:/webIde/product}")
     private String productRootLinux;
 
-    // 开放的基础指令白名单
+    // 开放的基础指令白名单 (对齐 DESIGN.md)
     private static final Set<String> ALLOWED_COMMANDS = new HashSet<>(Arrays.asList(
             "python", "python3", "bash", "sh", "cmd", "ls", "cat", "echo", "grep", "sed",
             "mkdir", "touch", "cp", "mv", "rm", "tee", "find", "chmod", "xargs", "curl"
@@ -52,9 +52,11 @@ public class SkillExecutor {
             throw new RuntimeException("Security Error: Command '" + firstCmd + "' is not allowed.");
         }
 
-        // 3. 强制路径前缀校验
+        // 3. 强制路径前缀校验：命令中涉及的任何路径/文件名必须以 skills/ 或 files/ 开头
         String argsPart = commandLine.trim().substring(firstCmd.length()).trim();
         if (!argsPart.isEmpty()) {
+            // 增强正则：支持中文、空格、引号包裹的路径解析
+            // 匹配模式：引号内的内容 OR 看起来像路径/文件名的连续字符（支持 Unicode）
             java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\"([^\"]+)\"|([^\\s><|&]+)").matcher(argsPart);
             while (matcher.find()) {
                 String potentialPath = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
@@ -113,7 +115,7 @@ public class SkillExecutor {
             }
         }
 
-        // 4. 参数路径校验
+        // 4. 参数路径校验（物理层）
         validatePathSecurity(commandLine, workingDir, isWin);
 
         // 4. 构建进程：通过 Shell 包装以支持 > | >> 等操作

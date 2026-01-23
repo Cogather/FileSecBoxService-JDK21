@@ -68,11 +68,10 @@ public class SandboxService {
             return;
         }
         Path creatorDir = productRoot.resolve(SKILL_CREATOR_DIR);
-
+        
         try {
             log.info("Downloading and refreshing global Skill-Creator from: {}", skillCreatorUrl);
-            java.net.URI targetUri = new java.net.URI(skillCreatorUrl);
-            java.net.URL targetUrl = targetUri.toURL();
+            java.net.URL targetUrl = new java.net.URL(skillCreatorUrl);
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
@@ -127,7 +126,7 @@ public class SandboxService {
                 if (name.isEmpty() || name.equals("/")) continue;
                 int slashIdx = name.indexOf('/');
                 if (slashIdx == -1) {
-                    if (!entry.isDirectory()) { commonRoot = null; break; }
+                    if (!entry.isDirectory()) { commonRoot = null; break; } // 根目录下有文件
                     String root = name;
                     if (first) { commonRoot = root; first = false; }
                     else if (!root.equals(commonRoot)) { commonRoot = null; break; }
@@ -187,7 +186,7 @@ public class SandboxService {
             flattenAllSkills(baselineRoot.resolve("skills"));
 
             if (Files.exists(baselineRoot)) {
-                FileSystemUtils.copyRecursively(baselineRoot, workspaceRoot);
+                FileSystemUtils.copyRecursively(baselineRoot.toFile(), workspaceRoot.toFile());
             }
             
             // --- 物理压缩处理 (工作空间层 A/A -> A) ---
@@ -241,7 +240,7 @@ public class SandboxService {
                 log.info("Physically flattening redundant directory: {}/{}", skillName, skillName);
                 Path tempDir = skillDir.getParent().resolve(skillName + "_tmp_" + System.currentTimeMillis());
                 Files.move(nested, tempDir);
-                storageService.deleteRecursively(skillDir);
+                storageService.deleteRecursively(skillDir.toFile().toPath());
                 Files.move(tempDir, skillDir);
             } catch (IOException e) {
                 log.error("Failed to physically flatten directory: {}", skillDir, e);
@@ -464,7 +463,7 @@ public class SandboxService {
                 if (Files.exists(baselineSkill)) {
                     storageService.deleteRecursively(workspaceSkill);
                     Files.createDirectories(workspaceSkill.getParent());
-                    FileSystemUtils.copyRecursively(baselineSkill, workspaceSkill);
+                    FileSystemUtils.copyRecursively(baselineSkill.toFile(), workspaceSkill.toFile());
                     log.info("Workspace updated from baseline for skill: {}", skillName);
                 } else if (Files.exists(workspaceSkill)) {
                     // 如果基线不存在但工作区存在 (LOCAL_ONLY)，同步基线到工作区意味着删除工作区内容
@@ -478,7 +477,7 @@ public class SandboxService {
                 if (Files.exists(workspaceSkill)) {
                     storageService.deleteRecursively(baselineSkill);
                     Files.createDirectories(baselineSkill.getParent());
-                    FileSystemUtils.copyRecursively(workspaceSkill, baselineSkill);
+                    FileSystemUtils.copyRecursively(workspaceSkill.toFile(), baselineSkill.toFile());
                     
                     // --- 物理压缩处理 (A/A -> A) ---
                     physicallyFlattenSkill(baselineSkill, skillName);
@@ -570,7 +569,7 @@ public class SandboxService {
                         if (!Files.exists(wsSkill)) {
                             // 新增同步
                             log.info("Manager Sync: Adding new skill to workspace: {}", skillName);
-                            FileSystemUtils.copyRecursively(blSkill, wsSkill);
+                            FileSystemUtils.copyRecursively(blSkill.toFile(), wsSkill.toFile());
                             updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
                         } else {
                             // 更新同步：基线晚于工作区修改时间才同步
@@ -578,7 +577,7 @@ public class SandboxService {
                             if (blMtime > wsMtime) {
                                 log.info("Manager Sync: Updating skill in workspace (baseline is newer): {}", skillName);
                                 storageService.deleteRecursively(wsSkill);
-                                FileSystemUtils.copyRecursively(blSkill, wsSkill);
+                                FileSystemUtils.copyRecursively(blSkill.toFile(), wsSkill.toFile());
                                 updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
                             }
                         }
@@ -806,7 +805,9 @@ public class SandboxService {
 
     private void zipDirectory(Path folder, String parentFolder, ZipOutputStream zos) throws IOException {
         try (Stream<Path> stream = Files.walk(folder)) {
-            for (Path path : (Iterable<Path>) stream::iterator) {
+            Iterator<Path> it = stream.iterator();
+            while (it.hasNext()) {
+                Path path = it.next();
                 if (Files.isDirectory(path)) continue;
                 String zipEntryName = parentFolder + "/" + folder.relativize(path).toString().replace('\\', '/');
                 zos.putNextEntry(new ZipEntry(zipEntryName));
