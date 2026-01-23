@@ -71,7 +71,8 @@ public class SandboxService {
 
         try {
             log.info("Downloading and refreshing global Skill-Creator from: {}", skillCreatorUrl);
-            java.net.URL targetUrl = new java.net.URL(skillCreatorUrl);
+            java.net.URI targetUri = new java.net.URI(skillCreatorUrl);
+            java.net.URL targetUrl = targetUri.toURL();
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
@@ -198,7 +199,21 @@ public class SandboxService {
             
             Path metaDir = workspaceRoot.resolve(META_DIR);
             Files.createDirectories(metaDir);
-            updateWorkspaceMeta(workspaceRoot);
+            
+            // 首次同步时，对所有从基线拷贝过来的技能更新其同步元数据
+            Path wsSkillsDir = workspaceRoot.resolve("skills");
+            if (Files.exists(wsSkillsDir)) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(wsSkillsDir)) {
+                    for (Path skill : stream) {
+                        if (Files.isDirectory(skill)) {
+                            String skillName = skill.getFileName().toString();
+                            if (!skillName.equals(SKILL_CREATOR_DIR)) {
+                                updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
+                            }
+                        }
+                    }
+                }
+            }
             
         } catch (IOException e) {
             log.error("Failed to sync workspace", e);
@@ -351,7 +366,13 @@ public class SandboxService {
         return "Baseline updated successfully. Skills: " + affectedSkills;
     }
 
-    public List<SkillMetadata> getSkillList(String userId, String agentId, boolean includeStatus) throws IOException {
+    public List<SkillMetadata> getSkillList(String userId, String agentId, boolean includeStatus, String role) throws IOException {
+        if (includeStatus && "manager".equalsIgnoreCase(role)) {
+            storageService.writeLockedVoid(agentId, () -> {
+                syncFromBaselineToWorkspace(userId, agentId);
+            });
+        }
+
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         Path wsSkillsDir = workspaceRoot.resolve("skills");
         
@@ -389,10 +410,10 @@ public class SandboxService {
                                 Path blSkillPath = blSkillsDir.resolve(skillName);
                                 
                                 if (!Files.exists(blSkillPath)) {
-                                    meta.setStatus("NEW");
+                                    meta.setStatus("LOCAL_ONLY");
                                 } else {
                                     long blMtime = Files.getLastModifiedTime(blSkillPath).toMillis();
-                                    if (blMtime > lastSyncMtime + 1000) meta.setStatus("OUT_OF_SYNC");
+                                    if (blMtime > currentMtime) meta.setStatus("OUT_OF_SYNC");
                                     else if (currentMtime > lastSyncMtime) meta.setStatus("MODIFIED");
                                     else meta.setStatus("UNCHANGED");
                                 }
@@ -401,21 +422,6 @@ public class SandboxService {
                                 meta.setStatus(null);
                                 meta.setLastSyncTime(null);
                             }
-                            metadataList.add(meta);
-                        }
-                    }
-                }
-            }
-
-            if (includeStatus && Files.exists(blSkillsDir)) {
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(blSkillsDir)) {
-                    for (Path blEntry : stream) {
-                        String skillName = blEntry.getFileName().toString();
-                        if (Files.isDirectory(blEntry) && !processedSkills.contains(skillName)) {
-                            SkillMetadata meta = parseSkillMd(blEntry);
-                            String key = Base64.getEncoder().encodeToString(skillName.getBytes(StandardCharsets.UTF_8));
-                            meta.setStatus("DELETED");
-                            meta.setLastSyncTime(formatTime(Long.parseLong(syncMeta.getProperty(key, "0"))));
                             metadataList.add(meta);
                         }
                     }
@@ -446,32 +452,49 @@ public class SandboxService {
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
-    public String baselineSync(String userId, String agentId, String skillName) throws IOException {
+    public String baselineSync(String userId, String agentId, String skillName, String direction) throws IOException {
         Path workspaceRoot = getWorkspaceRoot(userId, agentId);
         Path workspaceSkill = workspaceRoot.resolve("skills").resolve(skillName);
         Path baselineSkillsDir = getBaselineRoot(agentId).resolve("skills");
         Path baselineSkill = baselineSkillsDir.resolve(skillName);
 
         storageService.writeLockedVoid(agentId, () -> {
-            if (Files.exists(workspaceSkill)) {
-                storageService.deleteRecursively(baselineSkill);
-                Files.createDirectories(baselineSkill.getParent());
-                FileSystemUtils.copyRecursively(workspaceSkill, baselineSkill);
-                
-                // --- 物理压缩处理 (A/A -> A) ---
-                physicallyFlattenSkill(baselineSkill, skillName);
-                
-                log.info("Baseline updated for skill: {}", skillName);
-            } else if (Files.exists(baselineSkill)) {
-                storageService.deleteRecursively(baselineSkill);
-                log.info("Baseline deleted for skill: {}", skillName);
+            if ("bl2ws".equalsIgnoreCase(direction)) {
+                // 基线 -> 工作区 (手动同步)
+                if (Files.exists(baselineSkill)) {
+                    storageService.deleteRecursively(workspaceSkill);
+                    Files.createDirectories(workspaceSkill.getParent());
+                    FileSystemUtils.copyRecursively(baselineSkill, workspaceSkill);
+                    log.info("Workspace updated from baseline for skill: {}", skillName);
+                } else if (Files.exists(workspaceSkill)) {
+                    // 如果基线不存在但工作区存在 (LOCAL_ONLY)，同步基线到工作区意味着删除工作区内容
+                    storageService.deleteRecursively(workspaceSkill);
+                    log.info("Workspace skill deleted during bl2ws sync (not found in baseline): {}", skillName);
+                } else {
+                    throw new IOException("Skill not found in both baseline and workspace: " + skillName);
+                }
             } else {
-                throw new IOException("Skill not found in both workspace and baseline: " + skillName);
+                // 工作区 -> 基线 (ws2bl, 默认)
+                if (Files.exists(workspaceSkill)) {
+                    storageService.deleteRecursively(baselineSkill);
+                    Files.createDirectories(baselineSkill.getParent());
+                    FileSystemUtils.copyRecursively(workspaceSkill, baselineSkill);
+                    
+                    // --- 物理压缩处理 (A/A -> A) ---
+                    physicallyFlattenSkill(baselineSkill, skillName);
+                    
+                    log.info("Baseline updated for skill: {}", skillName);
+                } else if (Files.exists(baselineSkill)) {
+                    storageService.deleteRecursively(baselineSkill);
+                    log.info("Baseline deleted for skill (workspace not found): {}", skillName);
+                } else {
+                    throw new IOException("Skill not found in both workspace and baseline: " + skillName);
+                }
             }
             updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
         });
 
-        return "Baseline synchronized for skill: " + skillName;
+        return "Skill synchronization completed (" + (direction != null ? direction : "ws2bl") + ") for: " + skillName;
     }
 
     private void updateWorkspaceMetaForSkill(Path workspaceRoot, String agentId, String skillName) throws IOException {
@@ -506,16 +529,82 @@ public class SandboxService {
     }
 
     public String deleteSkill(String userId, String agentId, String skillName) throws IOException {
-        Path wsSkillsDir = getWorkspaceRoot(userId, agentId).resolve("skills");
-        Path skillPath = wsSkillsDir.resolve(skillName).normalize();
-        storageService.validateScope(skillPath, wsSkillsDir);
+        Path blSkillsDir = getBaselineRoot(agentId).resolve("skills");
+        Path skillPath = blSkillsDir.resolve(skillName).normalize();
+        storageService.validateScope(skillPath, blSkillsDir);
 
         storageService.writeLockedVoid(agentId, () -> {
             if (Files.exists(skillPath)) {
                 storageService.deleteRecursively(skillPath);
+                log.info("Deleted skill from baseline: {}", skillName);
             }
         });
-        return "Successfully deleted skill from workspace: " + skillName;
+        return "Successfully deleted skill from baseline: " + skillName;
+    }
+
+    private void syncFromBaselineToWorkspace(String userId, String agentId) throws IOException {
+        Path baselineSkillsDir = getBaselineRoot(agentId).resolve("skills");
+        Path workspaceRoot = getWorkspaceRoot(userId, agentId);
+        Path workspaceSkillsDir = workspaceRoot.resolve("skills");
+
+        // 读取上次同步时间
+        Properties syncMeta = new Properties();
+        Path metaFile = workspaceRoot.resolve(META_DIR).resolve("skills_sync.properties");
+        if (Files.exists(metaFile)) {
+            try (java.io.InputStream is = Files.newInputStream(metaFile)) {
+                syncMeta.load(is);
+            }
+        }
+
+        // 1. 新增与更新同步
+        if (Files.exists(baselineSkillsDir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(baselineSkillsDir)) {
+                for (Path blSkill : stream) {
+                    if (Files.isDirectory(blSkill)) {
+                        String skillName = blSkill.getFileName().toString();
+                        if (skillName.equals(SKILL_CREATOR_DIR)) continue;
+
+                        Path wsSkill = workspaceSkillsDir.resolve(skillName);
+                        long blMtime = Files.getLastModifiedTime(blSkill).toMillis();
+
+                        if (!Files.exists(wsSkill)) {
+                            // 新增同步
+                            log.info("Manager Sync: Adding new skill to workspace: {}", skillName);
+                            FileSystemUtils.copyRecursively(blSkill, wsSkill);
+                            updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
+                        } else {
+                            // 更新同步：基线晚于工作区修改时间才同步
+                            long wsMtime = Files.getLastModifiedTime(wsSkill).toMillis();
+                            if (blMtime > wsMtime) {
+                                log.info("Manager Sync: Updating skill in workspace (baseline is newer): {}", skillName);
+                                storageService.deleteRecursively(wsSkill);
+                                FileSystemUtils.copyRecursively(blSkill, wsSkill);
+                                updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 删除同步：工作区存在但基线不存在的技能（且不是系统内置），自动删除
+        if (Files.exists(workspaceSkillsDir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(workspaceSkillsDir)) {
+                for (Path wsSkill : stream) {
+                    if (Files.isDirectory(wsSkill)) {
+                        String skillName = wsSkill.getFileName().toString();
+                        if (skillName.equals(SKILL_CREATOR_DIR)) continue;
+
+                        Path blSkill = baselineSkillsDir.resolve(skillName);
+                        if (!Files.exists(blSkill)) {
+                            log.info("Manager Sync: Deleting skill from workspace (removed from baseline): {}", skillName);
+                            storageService.deleteRecursively(wsSkill);
+                            updateWorkspaceMetaForSkill(workspaceRoot, agentId, skillName);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public void downloadSkill(String userId, String agentId, String skillName, java.io.OutputStream os) throws IOException {
