@@ -10,13 +10,19 @@ import org.springframework.util.FileSystemUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -71,13 +77,13 @@ public class SandboxService {
         
         try {
             log.info("Downloading and refreshing global Skill-Creator from: {}", skillCreatorUrl);
-            java.net.URL targetUrl = new java.net.URL(skillCreatorUrl);
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) targetUrl.openConnection();
+            URL targetUrl = URI.create(skillCreatorUrl).toURL();
+            HttpURLConnection conn = (HttpURLConnection) targetUrl.openConnection();
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(30000);
             
             if (conn.getResponseCode() == 200) {
-                try (java.io.InputStream is = conn.getInputStream()) {
+                try (InputStream is = conn.getInputStream()) {
                     byte[] data = storageService.readAllBytesFromInputStream(is);
                     
                     // 自动识别 zip 内是否存在唯一的根目录并剥离
@@ -90,9 +96,13 @@ public class SandboxService {
                     }
 
                     Files.createDirectories(creatorDir);
-                    try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data))) {
-                        extractZip(zis, creatorDir, commonRoot);
-                    }
+                    processZipWithFallback(data, zis -> {
+                        try {
+                            extractZip(zis, creatorDir, commonRoot);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
                 }
                 log.info("Skill-Creator refreshed successfully to: {}", creatorDir);
             }
@@ -102,24 +112,49 @@ public class SandboxService {
     }
 
     private String detectCommonRoot(byte[] data) throws IOException {
+        final String[] commonRootHolder = new String[1];
+        processZipWithFallback(data, zis -> {
+            try {
+                commonRootHolder[0] = performDetectCommonRoot(zis);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        return commonRootHolder[0];
+    }
+
+    private void processZipWithFallback(byte[] data, Consumer<ZipInputStream> action) {
+        try {
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(data), StandardCharsets.UTF_8)) {
+                action.accept(zis);
+            }
+        } catch (Exception e) {
+            // 捕获 IOException, IllegalArgumentException 或 action 抛出的 RuntimeException
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(data), Charset.forName("GBK"))) {
+                action.accept(zis);
+            } catch (Exception ex) {
+                throw new RuntimeException("Failed to process ZIP with GBK fallback", ex);
+            }
+        }
+    }
+
+    private String performDetectCommonRoot(ZipInputStream zis) throws IOException {
         String commonRoot = null;
-        try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data))) {
-            ZipEntry entry;
-            boolean first = true;
-            while ((entry = zis.getNextEntry()) != null) {
-                String name = entry.getName().replace('\\', '/');
-                if (name.isEmpty() || name.equals("/")) continue;
-                int slashIdx = name.indexOf('/');
-                if (slashIdx == -1) {
-                    if (!entry.isDirectory()) { commonRoot = null; break; } // 根目录下有文件
-                    String root = name;
-                    if (first) { commonRoot = root; first = false; }
-                    else if (!root.equals(commonRoot)) { commonRoot = null; break; }
-                } else {
-                    String root = name.substring(0, slashIdx);
-                    if (first) { commonRoot = root; first = false; }
-                    else if (!root.equals(commonRoot)) { commonRoot = null; break; }
-                }
+        ZipEntry entry;
+        boolean first = true;
+        while ((entry = zis.getNextEntry()) != null) {
+            String name = entry.getName().replace('\\', '/');
+            if (name.isEmpty() || name.equals("/")) continue;
+            int slashIdx = name.indexOf('/');
+            if (slashIdx == -1) {
+                if (!entry.isDirectory()) { commonRoot = null; break; } // 根目录下有文件
+                String root = name;
+                if (first) { commonRoot = root; first = false; }
+                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
+            } else {
+                String root = name.substring(0, slashIdx);
+                if (first) { commonRoot = root; first = false; }
+                else if (!root.equals(commonRoot)) { commonRoot = null; break; }
             }
         }
         return commonRoot;
@@ -306,9 +341,15 @@ public class SandboxService {
         Set<String> skillsWithMd = new HashSet<>();
 
         storageService.writeLockedVoid(agentId, () -> {
-            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data))) {
-                scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
-            }
+            processZipWithFallback(data, zis -> {
+                try {
+                    affectedSkills.clear();
+                    skillsWithMd.clear();
+                    scanAndValidateSkills(zis, affectedSkills, skillsWithMd);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
             
             if (affectedSkills.isEmpty()) throw new RuntimeException("Validation Error: No valid skill directory found.");
             
@@ -321,9 +362,13 @@ public class SandboxService {
                 storageService.deleteRecursively(baselineSkillsDir.resolve(skill));
             }
 
-            try (ZipInputStream zis = new ZipInputStream(new java.io.ByteArrayInputStream(data))) {
-                extractZip(zis, baselineSkillsDir, null);
-            }
+            processZipWithFallback(data, zis -> {
+                try {
+                    extractZip(zis, baselineSkillsDir, null);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
             
             // --- 物理压缩处理 (A/A -> A) ---
             flattenAllSkills(baselineSkillsDir);
