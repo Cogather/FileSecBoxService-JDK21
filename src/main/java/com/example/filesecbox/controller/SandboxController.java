@@ -96,7 +96,8 @@ public class SandboxController {
         log.info("API CALL: downloadSkill, userId: {}, agentId: {}, skillName: {}", userId, agentId, name);
         try {
             response.setContentType("application/zip");
-            response.setHeader("Content-Disposition", "attachment; filename=" + name + ".zip");
+            String encodedFileName = java.net.URLEncoder.encode(name + ".zip", "UTF-8").replaceAll("\\+", "%20");
+            response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedFileName + "\"; filename*=UTF-8''" + encodedFileName);
             sandboxService.downloadSkill(userId, agentId, name, response.getOutputStream());
         } catch (Exception e) {
             log.error("API ERROR: downloadSkill", e);
